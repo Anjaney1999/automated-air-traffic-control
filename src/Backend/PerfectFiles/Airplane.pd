@@ -1,0 +1,284 @@
+//*******************************************************
+// The following class represents an Airplane in the 
+// simulation of the Air traffic control system.
+//*******************************************************
+
+import "Waypoint.pd";
+import "Vector.pd";
+import "Status.pd";
+import "Edge.pd";
+import "PreventiveMeasure.pd";
+import "PreventiveMeasureType.pd";
+
+class Airplane ^=
+abstract
+    //every airplane has a unique id
+	var id: string;
+    //x,y,z coordinates represent the airplane's location in 3d space
+	var x: real;
+	var y: real;
+	var z: real;
+    //source and target coordinates of the current airplane. It it assumed that
+    //these are constant and never change
+	var startingX: real;
+	var startingY: real;
+	var endingX: real;
+	var endingY: real;
+
+    //seq of edges which make up the route of the airplane
+	var route: seq of Edge;
+
+    var action: string;
+    //current status of the airplane
+	var status: Status;
+    //current velocity(multiplied by speed)
+	var currentVelocity: Vector;
+    //subsequent velocity once it encounters the next waypoint
+    //this variable is only relevant when the current route size is > 1
+	var nextVelocity: Vector;
+	var speed: real;
+    //keeps track of whether the potential collision of the current airplane
+    //has already been computed for the current time step
+	var examined: bool;
+    //keeps track of the time remaining to reach the next waypoint(or target)
+	var timeToWaypoint: real;
+    //the current preventive measure that the airplane is carrying out
+	var preventiveMeasure: PreventiveMeasure;
+    //speed at which the airplane changes altitude
+	var verticalSpeed: real;
+
+    var timeCloseToOtherPlanes: real;
+    var timeConflicted: real;
+    var timeFlown: real;
+
+    //invariants 
+	invariant verticalSpeed > 0.0;
+    //speed must always be above 170m/s
+	invariant speed >= 170.0;
+    //all coordinates must be valid
+	invariant x >= 0.0 & y >= 0.0;
+	invariant startingX >= 0.0 & startingY >= 0.0;
+	invariant endingX >= 0.0 & endingY >= 0.0;
+    invariant z >= 0.0;
+
+interface
+
+    //getters
+	function id;
+	function route;
+	function status;
+	function speed;
+	function timeToWaypoint;
+	function currentVelocity;
+	function nextVelocity;
+	function x;
+	function y;
+	function z;
+	function examined;
+	function preventiveMeasure;
+	function verticalSpeed;
+	function endingX;
+	function endingY;
+    function timeConflicted;
+    function timeCloseToOtherPlanes;
+    function action;
+    function timeFlown;
+
+    function getAirplaneAction: string
+    ^=
+    (
+        preventiveMeasure.type.toString
+    );
+
+    function getAirplaneCeiling: real
+    ^=
+    (
+        preventiveMeasure.ceiling
+    );
+
+    function getAirplaneFloor: real
+    ^=
+    (
+        preventiveMeasure.floor
+    );
+    //setters
+
+    //schema to set the current location of the airplane
+    schema !setLocation(newX: real, newY: real)
+        pre
+            //new coordinates must be positive
+            newX >= 0.0,
+            newY >= 0.0
+        post
+        (
+            //update coordinates    
+            x! = newX, 
+            y!= newY
+        );
+
+    schema !setTimeConflicted(t: real)
+        post
+        (
+            [t >= 0.0]:
+                timeConflicted! = t,
+            []:     
+                timeConflicted! = 0.0
+        );
+
+    schema !setTimeFlown(t: real)
+        post
+        (
+            [t >= 0.0]:
+                timeFlown! = t,
+            []:     
+                timeFlown! = 0.0
+        );
+
+    schema !setAction(a: string)
+        post
+        (
+            action! = a
+        );
+
+    schema !setTimeCloseToOtherPlanes(t: real)
+        post
+        (
+            [t >= 0.0]:
+                timeCloseToOtherPlanes! = t,
+            []:     
+                timeCloseToOtherPlanes! = 0.0
+        );
+
+
+    //set the current velocity of the airplane
+	schema !setCurrentVelocity(velocity: Vector)
+		post
+			currentVelocity! = velocity;
+
+    //set the altitude of the airplane. 
+    schema !setAltitude(altitude: real)
+    	pre
+            //Make sure the new altitude is above 5000m and below 15000m 
+    		altitude >= 5000.0 & altitude <= 15000.0
+    	post
+    	(
+			z! = altitude
+    	);
+
+    //schema to update status if it has changed
+	schema !setStatus(newStatus: Status)
+		post
+		(
+			[newStatus ~= status]:
+			(
+				status! = newStatus
+			),
+			[]:
+				pass
+		);
+
+	schema !setExamined(isExamined: bool)
+		post
+			examined! = isExamined;
+
+    //schema to update the route of the airplane if the size of the route is > 1
+    //the time to the next waypoint is also updated, along with the velocity
+	schema !updateRoute
+		post
+		(
+			[#route > 1]:
+			(
+				route! = route.remove(0) then
+				timeToWaypoint! = route[0].distance / speed then
+				currentVelocity! = Vector{route[0].direction.x * speed, 
+					route[0].direction.y * speed}
+			),
+			[]:
+				pass
+		);
+
+    //Reset the route to just be the route from the current location to the 
+    //original target
+	schema !resetRoute
+		pre
+			#route ~= 0
+		post
+		(
+			let newPath ^= Edge{Waypoint{x, y}, route.last.ending};
+			(
+				route! = seq of Edge{} then
+				route! = route.append(newPath)
+			)
+		);
+
+	schema !updateTimeToWaypoint(newTimeToWaypoint: real)
+		pre
+			newTimeToWaypoint >= 0.0
+		post
+		(
+			[newTimeToWaypoint >= 0.0]:
+			(
+				timeToWaypoint! = newTimeToWaypoint
+			),
+			[]:
+				pass
+		);
+
+    //set the current preventive measure that the airplane is to carry out
+	schema !setPreventiveMeasure(floor: real, ceiling: real, target: real, 
+		type: PreventiveMeasureType, endingTime: real)
+		post
+			preventiveMeasure! = PreventiveMeasure{floor, ceiling, target, type, endingTime};
+
+    //break the final edge of the current route into 2 parts that are joined by another waypoint
+	schema !configureFinalPath(paths: pair of (Edge, Edge))
+		pre
+			#route ~= 0
+		post
+		(
+			route! = route.remove(#route - 1) then
+			route! = route.append(paths.x) then
+			route! = route.append(paths.y) then
+			currentVelocity! = Vector{route[0].direction.x * speed, 
+				route[0].direction.y * speed} then
+			timeToWaypoint! = route[0].distance / speed
+		);
+
+    //constructor
+	build{!id: string, !route: seq of Edge, !speed: real, !z: real}
+		pre		
+            //initial altitude must be between 12000m and 14000m
+			z >= 8000.0 & z <= 12000.0,
+            //airplane must have valid coordinates and speed
+			#route ~= 0 & route[0].distance >= 0.0 & 
+			route[0].starting.x >= 0.0 & route[0].starting.y >= 0.0,
+			route[0].ending.x >= 0.0 & route[0].ending.y >= 0.0,
+			speed >= 170.0
+		post
+		(
+			(
+				x!= route[0].starting.x,
+				y! = route[0].starting.y,
+				currentVelocity! = Vector{route[0].direction.x * speed, 
+					route[0].direction.y * speed},
+				nextVelocity! = Vector{0.0, 0.0},
+				examined! = false,
+				startingX! = route[0].starting.x,
+				startingY! = route[0].starting.y,
+				endingX! = route[0].ending.x,
+				endingY! = route[0].ending.y
+			) then 
+			timeToWaypoint! = (route[0].distance / speed) then
+			preventiveMeasure! = PreventiveMeasure{5000.0, 15000.0, 0.0, 
+				noChange@PreventiveMeasureType, 0.0} then
+			status! = green@Status then
+			verticalSpeed! = speed * 0.0524 then
+            action! = "none" then
+            timeConflicted! = 0.0 then
+            timeCloseToOtherPlanes! = 0.0 then
+            timeFlown! = 0.0
+		);
+end;
+
+
+// End

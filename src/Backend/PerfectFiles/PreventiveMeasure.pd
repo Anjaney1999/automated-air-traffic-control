@@ -1,0 +1,31 @@
+//*******************************************************
+//The following class represents preventive measures(specifically changing altitude) that
+//an airplane is currently carrying out
+//*******************************************************
+
+class PreventiveMeasure ^=
+abstract
+    //floor and ceiling represent bounds between which the airplane is free to fly
+	var floor: real,
+	    ceiling: real,
+        //altitude the airplane is trying to reach
+	    target: real,
+        //elecate, descend, noChange
+		type: PreventiveMeasureType,
+        //time at which it can ignore the current preventive measure
+		ending: real
+
+interface
+
+    //getters
+	function floor;
+	function ceiling;
+	function target;
+	function type;
+	function ending;
+
+    //constructor
+	build{!floor: real, !ceiling: real, !target: real, !type: PreventiveMeasureType, !ending: real};
+end;
+
+// End

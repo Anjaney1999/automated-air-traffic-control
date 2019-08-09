@@ -1,0 +1,62 @@
+//*******************************************************
+//This class represents a waypoint in the tracked region
+//*******************************************************
+
+class Waypoint ^=
+abstract
+	var id: string;
+	var x: real;
+	var y: real;
+    //list of waypoints that have an edge connecting them to this waypoint
+	var neighbours: seq of string;
+
+    //the waypoint location must be valid
+	invariant x >= 0.0;
+	invariant y >= 0.0;
+
+interface
+    
+    //getters
+	function x;
+	function y;
+	function id;
+	function neighbours;
+
+    schema !setNeighbours(newList: seq of string)
+        post
+        (
+            neighbours! = newList
+        );
+
+    //add a neighbour if the neighbour does not already exist
+	schema !addNeighbour(waypoint: string)
+    	post
+    	(
+    		[neighbours.findFirst(waypoint) = -1]:
+    			neighbours! = neighbours.append(waypoint),
+    		[]:
+    			pass
+    	);
+	
+    //constructor with id given
+	build{!id: string, !x: real, !y: real}
+		pre
+			x >= 0.0,
+			y >= 0.0
+		post
+			neighbours! = seq of string{};
+
+    //constructor without id
+	build{!x: real, !y: real}
+	pre
+		x >= 0.0,
+		y >= 0.0
+	post
+	(
+		id! = "NaN",
+		neighbours! = seq of string{}
+	);
+
+
+
+end;

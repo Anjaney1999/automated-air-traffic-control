@@ -1,0 +1,224 @@
+//*******************************************************
+//The following class is an implementation of a binary min-heap
+//*******************************************************
+
+import "Node.pd";
+
+class Heap ^=
+
+abstract
+	
+	var list: seq of Node;
+
+interface
+
+	function size: int
+	^= #list;
+	
+	function parent(currentPos: int): int 
+	pre
+		currentPos < #list
+	^=
+	(
+		currentPos / 2
+	);
+
+	function leftChild(currentPos: int): int
+	pre
+		currentPos < #list 
+	^=
+	(
+		currentPos * 2
+	);
+
+	function rightChild(currentPos: int): int
+	pre
+		currentPos < #list
+	^=
+	(
+		currentPos * 2 + 1
+	);
+
+	function isLeaf(currentPos: int): bool
+	pre
+		currentPos < #list
+	^=
+	(
+		[currentPos < #list & currentPos >= (#list / 2)]:
+		(
+			true
+		),
+		[]:
+			false
+	);
+
+    //update distance in node at index in list, then
+    //heapify up
+    schema !update(index: int, distance: real)
+        pre
+            #list ~= 0,
+            0<=index<#list,
+            distance >= 0.0
+        post
+        (
+            [#list ~= 0]:
+            (
+                list[index]!updateDistance(distance) then
+                !heapify_up(index, 0, #list - 1)
+            ),
+            []:
+                pass
+        );
+
+    //"move" up the heap until the correct position has been
+    //located for the node which was initially at position pos
+	schema !heapify_up(pos: int, low: int, high: int)
+		pre
+			#list ~= 0,
+			0<=low<=pos<=high<#list
+		decrease high - low
+		post
+		(
+			[pos ~= 0 & high >= 2*low]:
+			(
+				[parent(pos) < #list]:
+				(
+					[list[pos].distance < list[parent(pos)].distance]:
+					(
+						swap(list[pos]!, list[parent(pos)]!) then
+						(
+							[parent(pos) >= low]:
+							(
+								!heapify_up(parent(pos), low, parent(pos))
+							),
+							[]:
+								pass
+						)
+					),
+					[]:
+						pass
+				),
+				[]:
+					pass
+			),
+			[]:
+				pass
+		);
+
+    //append node to the end of the list, then
+    //up heapify
+	schema !insert(node: Node)
+		post
+		(
+			[node.distance >= 0.0]:
+			(
+				list! = list.append(node) then
+				!heapify_up(#list - 1, 0, #list - 1)
+			),
+			[]:
+				pass
+		);
+
+    //"move" down the heap until the correct position is found
+    // for node intially at position pos
+    schema !heapify_down(pos: int, low: int, high: int)
+        pre
+            #list ~= 0,
+            0<=low<=pos<=high<#list
+        decrease high - low
+        post
+        (
+            [high >= 2*low & isLeaf(pos) = false]:
+            (
+                [leftChild(pos) < #list & rightChild(pos) < #list]:
+                (
+                    [list[pos].distance > list[leftChild(pos)].distance | 
+                        list[pos].distance > list[rightChild(pos)].distance]:
+                    (
+                        [list[leftChild(pos)].distance < list[rightChild(pos)].distance]:
+                        (
+                            swap(list[pos]!, list[leftChild(pos)]!) then
+                            (
+                                [leftChild(pos) <= high]:
+                                    !heapify_down(leftChild(pos), leftChild(pos), high),
+                                []:
+                                    pass
+                            )
+                        ),
+                        []:
+                        (
+                            swap(list[pos]!, list[rightChild(pos)]!) then
+                            (
+                                [rightChild(pos) <= high]:
+                                    !heapify_down(rightChild(pos), rightChild(pos), high),
+                                []:
+                                    pass
+                            )
+                        )
+                    ),
+                    []:
+                        pass
+                ),
+                []:
+                    pass
+            ),
+            []:
+                pass
+        );
+
+    function getMin: Node
+    pre
+        #list ~= 0
+    ^= 
+    (
+        [#list ~= 0]:
+            list.head,
+        []:
+            Node{"null", 0.0}
+    );
+
+    schema !removeMin
+        pre
+            #list ~= 0
+        post
+        (
+            [#list ~= 0]:
+            (
+                list[0]! = list[#list - 1] then
+                list! = list.front then
+                (
+                    [#list > 1]:
+                        !heapify_down(0, 0, #list - 1),
+                    []:
+                        pass
+                )
+            ),
+            []:
+                pass
+        );
+
+    //find node in the list with id waypointId
+    opaque function find(waypointId: string): int
+    ^=
+    (
+        [#list ~= 0]:
+        (
+            [exists node::list :- node.waypoint = waypointId]:
+            (
+                let requiredNode ^= any node::list :- node.waypoint = waypointId;
+                list.findFirst(requiredNode)
+            ),
+            []:
+                -1
+        ),
+        []:
+            -1
+    );
+    //constructor
+	build{}
+		post
+		(
+			list! = seq of Node{}
+		);
+
+end;

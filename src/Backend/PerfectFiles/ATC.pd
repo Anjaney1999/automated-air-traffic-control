@@ -1,0 +1,2065 @@
+//*******************************************************
+//The following class represents the backend of the autonmated
+//ATC system. It handles everything from keeping track of all airplanes
+//to preventing collisions that the airplanes could be part of by 
+//assigning preventive measures to each of them or suggesting a new route
+//using dijkstras shortest path algorithm
+//*******************************************************
+
+import "Airplane.pd";
+import "PreventiveMeasureType.pd";
+import "PreventiveMeasure.pd";
+import "Vector.pd";
+import "PotentialCollision.pd";
+import "Edge.pd";
+import "Calculations.pd";
+import "Status.pd";
+import "PriorityQueue.pd";
+import "Heap.pd";
+
+
+class ATC ^=
+abstract
+
+    //map mapping id to an airplane object
+    var airplanes: map of (string -> Airplane);
+    //list of airplanes that will need to be removed
+    //after the current time step
+    var airplanesToRemove: seq of string;
+    //map mapping id to a waypoint object
+    var waypoints: map of (string -> Waypoint);
+    //list of potential collisions, sorted by time
+    var potentialCollisions: seq of PotentialCollision;
+    //pair representing the region's size(only a square shaped region is allowed)
+    var regionSize: pair of (real, real); 
+    //the current global time
+    var time: real;
+    //the new path that will be suggested for a particular plane
+    //at the end of the current time step
+    var newPath: map of (string -> string);
+    //the distance from the source node(used during dijkstras)
+    var distance: map of (string -> real);
+    //priority queue used for dijkstras
+    var priorityQueue: PriorityQueue;
+    var noOfCrashes: int;
+    var numAirplanesThatLeftRegion: real;
+    var sumPercentageOfTimeConflicted1: real;
+    var sumPercentageOfTimeConflicted2: real;
+    var sumTimeConflicted: real;
+
+    //time must be positive at all times
+    invariant time >= 0.0;
+
+interface
+    
+    //make sure id is universally unique
+    function idIsUnique(id: string): bool
+    ^= id ~in waypoints.dom & id ~in airplanes.dom;
+
+    function getNoOfCrashes: int ^= noOfCrashes;
+
+    function getAverageTimeConflicted: real ^=
+        (
+            [numAirplanesThatLeftRegion <= 0.0]:
+                0.0,
+            []:
+            (
+                sumTimeConflicted / numAirplanesThatLeftRegion
+            )
+        );
+
+    function getPercentageOfTimeConflicted1: real ^=
+        (
+            [numAirplanesThatLeftRegion <= 0.0]:
+                0.0,
+            []:
+            (
+                sumPercentageOfTimeConflicted1 / numAirplanesThatLeftRegion
+            )
+        );
+
+    function getPercentageOfTimeConflicted2: real ^=
+        (
+            [numAirplanesThatLeftRegion <= 0.0]:
+                0.0,
+            []:
+            (
+                sumPercentageOfTimeConflicted2 / numAirplanesThatLeftRegion
+            )
+        );
+
+
+    
+    //simple getters
+    function getNumberOfAirplanes: int ^= #airplanes.dom;
+
+    function getNumberOfWaypoints: int ^= #waypoints.dom;
+
+    function getNumberOfPotentialCollisions: int ^= #potentialCollisions;
+
+    function getNumberOfAirplanesToRemove: int ^= #airplanesToRemove;
+
+    function isAirplaneInTrackedRegion(id: string): bool
+    ^= id in airplanes.dom;
+
+    function isWaypointInTrackedRegion(id: string): bool
+    ^= id in waypoints.dom;
+
+    function getAirplaneLocation(id: string): string ^=
+    (
+        [id in airplanes.dom]:
+        (
+            airplanes[id].x.toString ++ "," ++ airplanes[id].y.toString
+        ),
+        []:
+            "null"
+    );
+
+    function getAirplaneAction(id: string): string ^=
+    (
+        [id in airplanes.dom]:
+        (
+            airplanes[id].action
+        ),
+        []:
+            "null"    
+    );
+
+    function getAirplaneCeiling(id: string): real 
+    ^=
+    (
+        [id in airplanes.dom]:
+        (
+            airplanes[id].getAirplaneCeiling
+        ),
+        []:
+            0.0 
+    );
+
+    function getAirplaneFloor(id: string): real 
+    ^=
+    (
+        [id in airplanes.dom]:
+        (
+            airplanes[id].getAirplaneFloor
+        ),
+        []:
+            0.0  
+    );
+
+    function getAirplaneStatus(id: string): string ^=
+    (
+        [id in airplanes.dom]:
+        (
+            airplanes[id].status.toString
+        ),
+        []:
+            "null"
+    );
+
+    function getAirplaneAltitude(id: string): real ^=
+    (
+        [id in airplanes.dom]:
+        (
+            airplanes[id].z
+        ),
+        []:
+            0.0
+    );
+
+    function getOrigin(inputString: string): string
+    ^=
+    (
+        [inputString in newPath.dom]:
+            newPath[inputString],
+        []:
+            "NaN"
+    );
+
+    function printCollisions: string
+    ^=
+    (
+        [#potentialCollisions ~= 0]:
+            printEachCollision(0),
+        []:
+            "NO COLLISIONS DETECTED"
+    );
+
+    //recursively create a string that shows all the collisions that the 
+    //ATC system has been able to detect
+    function printEachCollision(index: int): string
+    pre
+        index >= 0,
+        index < #potentialCollisions,
+        #potentialCollisions ~= 0
+    decrease (#potentialCollisions - 1) - index
+    ^=
+    (
+        
+        [index < (#potentialCollisions - 1) & #potentialCollisions[index].airplanes = 2]:
+            "potential collision " ++ (index + 1).toString ++ ": (" ++ potentialCollisions[index].airplanes[0] ++ ", " ++ 
+            potentialCollisions[index].airplanes[1] ++ ") time: " 
+            ++ (potentialCollisions[index].time + 1).roundin.toString ++ "\n" ++ printEachCollision(index + 1),
+        [#potentialCollisions[index].airplanes = 2]:
+            "potential collision " ++ (index + 1).toString ++ ": (" ++ potentialCollisions[index].airplanes[0] ++ ", " ++ 
+            potentialCollisions[index].airplanes[1] ++ ") time: " 
+            ++ (potentialCollisions[index].time + 1).roundin.toString,
+        []:
+            ""
+    );
+
+    opaque function printPreventiveMeasures: string
+    ^=
+    (
+        [#airplanes.dom ~= 0]:
+            getEachPreventiveMeasure(airplanes.dom.opermndec, 0),
+        []:
+            "null"
+    );
+
+
+    //recursively create a string that the preventive measure that each airplane is executing
+    function getEachPreventiveMeasure(airplaneList: seq of string, index: int): string 
+    pre
+        index >= 0,
+        #airplaneList ~= 0,
+        index < #airplaneList
+    decrease (#airplaneList - 1) - index
+    ^=
+    (
+        [index < (#airplaneList - 1) & airplaneList[index] in airplanes.dom]:
+        (
+            "Plane: " ++ airplaneList[index] ++ "\nFloor: " ++ 
+            airplanes[airplaneList[index]].preventiveMeasure.floor.toString ++ " Ceiling: "
+            ++ airplanes[airplaneList[index]].preventiveMeasure.ceiling.toString ++ " Target: "  ++ 
+            airplanes[airplaneList[index]].preventiveMeasure.target.toString ++ " Type: " ++ 
+            airplanes[airplaneList[index]].preventiveMeasure.type.toString   ++ " Ending: " ++ 
+            airplanes[airplaneList[index]].preventiveMeasure.ending.toString ++ "\n" ++ 
+            getEachPreventiveMeasure(airplaneList, index + 1)
+        ),
+        [airplaneList[index] in airplanes.dom]:
+        (
+            "Floor: " ++ airplanes[airplaneList[index]].preventiveMeasure.floor.toString ++ " Ceiling: "
+            ++ airplanes[airplaneList[index]].preventiveMeasure.ceiling.toString ++ " Target: "  ++ 
+            airplanes[airplaneList[index]].preventiveMeasure.target.toString ++ " Type: " ++ 
+            airplanes[airplaneList[index]].preventiveMeasure.type.toString   ++ " Ending: " ++ 
+            airplanes[airplaneList[index]].preventiveMeasure.ending.toString
+        ),
+        []:
+            ""
+    );
+
+    function getWaypointLocation(id: string): string ^=
+    (
+        [id in waypoints.dom]:
+        (
+            waypoints[id].x.toString ++ "," ++ waypoints[id].y.toString
+        ),
+        []:
+            "null"
+    );
+
+    function getCurrentPathVector(id: string): string
+    pre
+        id in airplanes.dom
+    ^=
+    (
+        [#airplanes[id].route ~= 0]:
+        (
+            airplanes[id].currentVelocity.x.toString ++ "," 
+            ++ airplanes[id].currentVelocity.y.toString
+        ),
+        []:
+            "null"
+    );
+
+    //make sure waypoint location is valid and sufficient spacing
+    //exists between each waypoint
+    function isValidWaypointLocation(x: real, y: real): bool
+        pre
+            x <= regionSize.x & x >= 0.0,
+            y <= regionSize.y & y >= 0.0
+    ^=
+    (
+        [x <= regionSize.x & x >= 0.0 & y <= regionSize.y & y >= 0.0]:
+        (
+            forall waypointId::waypoints.dom :- 
+            Calculations{}.findDistance(Vector{x, y}, 
+                Vector{waypoints[waypointId].x, waypoints[waypointId].y}) >= 10000.0
+        ),
+        []:
+            false
+    );
+
+    schema !addWaypoint(id: string, x: real, y: real)
+        pre
+            x <= regionSize.x & x >= 0.0,
+            y <= regionSize.y & y >= 0.0,
+            id ~in waypoints.dom
+        post
+        (
+            [id ~in waypoints.dom]:
+            (
+                [x < regionSize.x & x > 0.0 & y < regionSize.y & y > 0.0]:
+                (
+                    var waypoint: Waypoint! = Waypoint{id, x, y};
+                    (
+                        [isValidWaypointLocation(x, y)]:
+                        (
+                            waypoints! = waypoints.append(id -> waypoint)
+                        ),
+                        []:
+                            pass
+                    )
+                ),
+                []:
+                    pass
+            ),
+            []:
+                pass
+        );
+
+    schema !addAirplane(id: string, speed: real, startX: real, startY: real, endX: real, endY: real, altitude: real)
+        pre
+
+            id ~in airplanes.dom,
+            speed >= 170.0,
+            altitude >= 8000.0 & altitude <= 12000.0
+        post
+        (
+            [id ~in airplanes.dom]:
+            (
+                [startX >= 0.0 & startY >= 0.0 & endX >= 0.0 & endY >= 0.0]:
+                (
+                    [(startX = 0.0 | startX = regionSize.x | startY = 0.0 | startY = regionSize.y) &
+                    (endX = 0.0 | endX = regionSize.x | endY = 0.0 | endY = regionSize.y)]:
+                    (
+                        [(speed >= 170.0) & (altitude >= 8000.0 & altitude <= 12000.0)]:
+                        (
+                            let path ^= Edge{Waypoint{startX, startY}, Waypoint{endX, endY}};
+                            var airplane: Airplane! = Airplane{id, seq of Edge{path}, speed, altitude};
+                            (
+                                airplanes! = airplanes.append(id -> airplane) then
+                                //reset potential collisions list and reset preventive measure for each airplane
+                                potentialCollisions! = seq of PotentialCollision{} then
+                                (
+                                    forall a::airplanes.dom.remove(id) :- 
+                                    (
+                                        airplanes[a]!setPreventiveMeasure(5000.0, 15000.0, 0.0, 
+                                                noChange@PreventiveMeasureType, time)
+                                    )
+                                )
+                            )
+                        ),
+                        []:
+                            pass
+                    ),
+                    []:
+                        pass
+                ),
+                []:
+                    pass
+            ),
+            []:
+                pass
+        );
+
+    //update airplaneId's path by breaking the final edge into 2 parts by removing
+    //the edge and joining the 2 waypoints by adding a path that goes through
+    //waypointId
+    schema !updateAirplanePath(airplaneId: string, waypointId: string)
+        pre
+            airplaneId in airplanes.dom,
+            waypointId in waypoints.dom
+        post
+        (
+            [#waypoints.dom ~= 0]:
+            ( 
+                [#airplanes[airplaneId].route ~= 0]:
+                (
+                    [airplanes[airplaneId].route.last.starting.x >= 0.0 & 
+                        airplanes[airplaneId].route.last.starting.y >= 0.0 & 
+                        waypoints[waypointId].x >= 0.0 & waypoints[waypointId].y >= 0.0]:
+                    (
+                        let firstSection ^= Edge{airplanes[airplaneId].route.last.starting, waypoints[waypointId]};
+                        let secondSection ^= Edge{waypoints[waypointId], airplanes[airplaneId].route.last.ending};
+                        let paths ^= pair of (Edge, Edge){firstSection, secondSection};
+                        airplanes[airplaneId]!configureFinalPath(paths)
+                    ),
+                    []:
+                        pass
+                ),
+                []:
+                    pass
+            ),
+            []:
+                pass
+        );
+
+    //reset route to stragith path from current location to ending point
+    schema !deleteAirplanePath(airplaneId: string)
+        pre
+            airplaneId in airplanes.dom
+        post
+        (
+            [airplaneId in airplanes.dom]:
+            (
+                [#airplanes[airplaneId].route > 0]:
+                (
+                    airplanes[airplaneId]!resetRoute then
+                    potentialCollisions! = seq of PotentialCollision{} then
+                    (
+                        forall a::airplanes.dom :- 
+                        (
+                            airplanes[a]!setPreventiveMeasure(5000.0, 150000.0, 0.0, 
+                                    noChange@PreventiveMeasureType, time)
+                        )
+                    ) then
+                    (
+                        [#airplanes[airplaneId].route ~= 0]:
+                        (
+                            airplanes[airplaneId]!setCurrentVelocity(Vector{airplanes[airplaneId].route[0].direction.x * 
+                                airplanes[airplaneId].speed, airplanes[airplaneId].route[0].direction.y * 
+                                airplanes[airplaneId].speed})
+                        ),
+                        []:
+                            pass
+                    )
+                ),
+                []:
+                    pass
+            ),
+            []:
+                pass
+        );
+
+    //update location of airplane as well as execute preventive measure, and update status
+    schema !updateLocation(id: string)
+     pre
+         id in airplanes.dom
+     post
+     (
+        [id in airplanes.dom]:
+        (
+            (
+                (
+                    //update location and include airplane in remove airplane list, if it has reached its
+                    //destination
+                    [#airplanes[id].route = 1]:
+                    (
+                        [airplanes[id].timeToWaypoint >= 0.0]:
+                        (
+                            [airplanes[id].timeToWaypoint > 1.0]:
+                            (
+                                let x ^= airplanes[id].x + airplanes[id].currentVelocity.x;
+                                let y ^= airplanes[id].y + airplanes[id].currentVelocity.y;
+                                airplanes[id]!updateTimeToWaypoint(airplanes[id].timeToWaypoint - 1.0) then
+                                (
+                                    [x >= 0.0 & y >= 0.0]:
+                                        airplanes[id]!setLocation(x, y),
+                                    []:
+                                        pass
+                                ) then
+                                airplanes[id]!setExamined(false)
+                            ),
+                            []:
+                            (
+                                airplanesToRemove! = airplanesToRemove.append(id)
+                            )
+                        ),
+                        []:
+                            airplanesToRemove! = airplanesToRemove.append(id)
+                    ),
+                    [#airplanes[id].route >= 2]:
+                    (
+                        [airplanes[id].timeToWaypoint >= 0.0]:
+                        (
+                            [airplanes[id].timeToWaypoint > 1.0]:
+                            (
+                                let x ^= airplanes[id].x + airplanes[id].currentVelocity.x;
+                                let y ^= airplanes[id].y + airplanes[id].currentVelocity.y;
+                                airplanes[id]!updateTimeToWaypoint(airplanes[id].timeToWaypoint - 1.0) then
+                                (
+                                    [x >= 0.0 & y >= 0.0]:
+                                        airplanes[id]!setLocation(x, y),
+                                    []:
+                                        pass
+                                ) then
+                                airplanes[id]!setExamined(false)
+                            ),
+                            []:
+                            (
+                                let timeRemaining ^= 1.0 - airplanes[id].timeToWaypoint;
+                                let x ^= airplanes[id].route[1].starting.x + airplanes[id].nextVelocity.x;
+                                let y ^= airplanes[id].route[1].starting.y + airplanes[id].nextVelocity.y;
+                                airplanes[id]!setCurrentVelocity(airplanes[id].nextVelocity) then
+                                airplanes[id]!updateRoute then
+                                (
+                                    [x >= 0.0 & y >= 0.0]:
+                                        airplanes[id]!setLocation(x, y),
+                                    []:
+                                        pass
+                                ) then
+                                (
+                                    [(airplanes[id].timeToWaypoint - timeRemaining) >= 0.0]:
+                                        airplanes[id]!updateTimeToWaypoint(airplanes[id].timeToWaypoint - timeRemaining),
+                                    []:
+                                        pass
+                                ) then
+                                airplanes[id]!setExamined(false)
+                            )
+                        ),
+                        []:
+                            airplanesToRemove! = airplanesToRemove.append(id)
+                    ),
+                    []:
+                    (
+                        airplanesToRemove! = airplanesToRemove.append(id)
+                    )
+                )then
+                (
+                    //update status by checking if airplane is conflicting with any other
+                    //airplane
+                    [isConflicted(id) = true]:
+                    (
+                        airplanes[id]!setStatus(red@Status) then
+                        airplanes[id]!setTimeConflicted(airplanes[id].timeConflicted + 1)
+                    ),
+                    []:
+                    (
+                        airplanes[id]!setStatus(green@Status)
+                    )
+                ) then
+                (
+                    [isConflictedHorizontally(id) = true]:
+                    (
+                        airplanes[id]!setTimeCloseToOtherPlanes(airplanes[id].timeCloseToOtherPlanes + 1)
+                    ),
+                    []:
+                        pass
+
+                ) then
+                airplanes[id]!setTimeFlown(airplanes[id].timeFlown + 1) then
+                (
+                    //update airplane altitude
+                    [id in airplanes.dom]:
+                    (
+                        [airplanes[id].preventiveMeasure.type = descend@PreventiveMeasureType]:
+                        (
+                            airplanes[id]!setAction("descending") then
+                            (
+                                [airplanes[id].preventiveMeasure.ending >= time]:
+                                (
+                                    [airplanes[id].preventiveMeasure.target < airplanes[id].z]:
+                                    (
+                                        let newAltitude ^= airplanes[id].z - airplanes[id].verticalSpeed;
+                                        (
+                                            [airplanes[id].preventiveMeasure.floor < newAltitude]:
+                                            (
+                                                [newAltitude <= 15000.0 & newAltitude >= 5000.0]:
+                                                (
+                                                    airplanes[id]!setAltitude(newAltitude) then
+                                                    (
+                                                        [airplanes[id].status ~= red@Status]:
+                                                            airplanes[id]!setStatus(orange@Status),
+                                                        []:
+                                                            pass
+                                                    )
+                                                ),
+                                                [newAltitude > 15000.0]:
+                                                (
+                                                    airplanes[id]!setAltitude(15000.0) then
+                                                    airplanes[id]!setPreventiveMeasure(airplanes[id].z, 
+                                                        airplanes[id].preventiveMeasure.ceiling, airplanes[id].z, 
+                                                        noChange@PreventiveMeasureType, time)
+                                                ),
+                                                [newAltitude < 5000.0]:
+                                                (
+                                                    airplanes[id]!setAltitude(5000.0) then
+                                                    airplanes[id]!setPreventiveMeasure(airplanes[id].z, 
+                                                        airplanes[id].preventiveMeasure.ceiling, airplanes[id].z, 
+                                                        noChange@PreventiveMeasureType, time)
+                                                ),
+                                                []:
+                                                (
+                                                    (
+                                                        [airplanes[id].preventiveMeasure.floor <= 15000.0 & 
+                                                        airplanes[id].preventiveMeasure.floor >= 5000.0]:
+                                                        (
+                                                            airplanes[id]!setAltitude(airplanes[id].preventiveMeasure.floor)
+                                                        ),
+                                                        []:
+                                                            pass
+                                                    ) then
+                                                    airplanes[id]!setPreventiveMeasure(airplanes[id].z, 
+                                                        airplanes[id].preventiveMeasure.ceiling, airplanes[id].z, 
+                                                        noChange@PreventiveMeasureType, time)  
+                                                )
+                                            ),
+                                            []:
+                                            (
+                                                (
+                                                    [airplanes[id].preventiveMeasure.floor <= 15000.0 & 
+                                                    airplanes[id].preventiveMeasure.floor >= 5000.0]:
+                                                    (
+                                                        airplanes[id]!setAltitude(airplanes[id].preventiveMeasure.floor)
+                                                    ),
+                                                    []:
+                                                        airplanes[id]!setAltitude(5000.0)
+                                                ) then
+                                                airplanes[id]!setPreventiveMeasure(airplanes[id].z, 
+                                                    airplanes[id].preventiveMeasure.ceiling, airplanes[id].z, 
+                                                    noChange@PreventiveMeasureType, time)
+                                            )
+                                        ) then
+                                        (
+                                            [airplanes[id].preventiveMeasure.ending < (time + 1)]:
+                                            (
+                                                airplanes[id]!setPreventiveMeasure(5000.0, 15000.0, 0.0, 
+                                                    noChange@PreventiveMeasureType,time)
+                                            ),
+                                            []:
+                                                pass
+                                        )
+                                    ),
+                                    []:
+                                    (
+                                        airplanes[id]!setPreventiveMeasure(5000.0, 15000.0, 0.0, 
+                                            noChange@PreventiveMeasureType,time)
+                                    )
+                                ),
+                                []:
+                                (
+                                    airplanes[id]!setPreventiveMeasure(5000.0, 15000.0, 0.0, 
+                                        noChange@PreventiveMeasureType, time)
+                                )
+                            )
+                        ),
+                        [airplanes[id].preventiveMeasure.type = elevate@PreventiveMeasureType]:
+                        (
+                            airplanes[id]!setAction("elevating") then
+                            (
+                                [airplanes[id].preventiveMeasure.ending >= time]:
+                                (
+                                    [airplanes[id].preventiveMeasure.target > airplanes[id].z]:
+                                    (
+                                        let newAltitude ^= airplanes[id].z + airplanes[id].verticalSpeed;
+                                        (
+                                            [airplanes[id].preventiveMeasure.ceiling > newAltitude]:
+                                            (
+                                                [newAltitude <= 15000.0 & newAltitude >= 5000.0]:
+                                                (
+                                                    airplanes[id]!setAltitude(newAltitude) then
+                                                    (
+                                                        [airplanes[id].status ~= red@Status]:
+                                                            airplanes[id]!setStatus(orange@Status),
+                                                        []:
+                                                            pass
+                                                    )
+                                                ),
+                                                [newAltitude > 15000.0]:
+                                                (
+                                                    airplanes[id]!setAltitude(15000.0) then
+                                                    airplanes[id]!setPreventiveMeasure(airplanes[id].preventiveMeasure.floor, 
+                                                        airplanes[id].z, airplanes[id].z, 
+                                                        noChange@PreventiveMeasureType, time)
+                                                ),
+                                                [newAltitude < 5000.0]:
+                                                (
+                                                    airplanes[id]!setAltitude(5000.0) then
+                                                    airplanes[id]!setPreventiveMeasure(airplanes[id].preventiveMeasure.floor, 
+                                                        airplanes[id].z, airplanes[id].z, 
+                                                        noChange@PreventiveMeasureType, time)
+                                                ),
+                                                []:
+                                                (
+                                                    (
+                                                        [airplanes[id].preventiveMeasure.ceiling <= 15000.0 & 
+                                                        airplanes[id].preventiveMeasure.ceiling >= 5000.0]:
+                                                        (
+                                                            airplanes[id]!setAltitude(airplanes[id].preventiveMeasure.ceiling)
+                                                        ),
+                                                        []:
+                                                            airplanes[id]!setAltitude(15000.0)
+                                                    ) then
+                                                    airplanes[id]!setPreventiveMeasure(airplanes[id].preventiveMeasure.floor, 
+                                                        airplanes[id].z, airplanes[id].z, 
+                                                        noChange@PreventiveMeasureType, time)
+                                                )
+                                            ),
+                                            []:
+                                            (
+                                                (
+                                                    [airplanes[id].preventiveMeasure.ceiling <= 15000.0 & 
+                                                    airplanes[id].preventiveMeasure.ceiling >= 5000.0]:
+                                                    (
+                                                        airplanes[id]!setAltitude(airplanes[id].preventiveMeasure.ceiling)
+                                                    ),
+                                                    []:
+                                                        pass
+                                                ) then
+                                                airplanes[id]!setPreventiveMeasure(airplanes[id].preventiveMeasure.floor, 
+                                                    airplanes[id].z, airplanes[id].z, 
+                                                    noChange@PreventiveMeasureType, time)
+                                            )
+                                        ) then
+                                        (
+                                            [airplanes[id].preventiveMeasure.ending < (time + 1)]:
+                                            (
+                                                airplanes[id]!setPreventiveMeasure(5000.0, 15000.0, 0.0, 
+                                                    noChange@PreventiveMeasureType, time) 
+                                            ),
+                                            []:
+                                                pass
+                                        )
+                                    ),
+                                    []:
+                                    (
+                                        airplanes[id]!setPreventiveMeasure(5000.0, 15000.0, 0.0, 
+                                            noChange@PreventiveMeasureType,time) 
+                                    )
+                                ),
+                                []:
+                                (
+                                     airplanes[id]!setPreventiveMeasure(5000.0, 15000.0, 0.0, 
+                                        noChange@PreventiveMeasureType, time)
+                                )
+                            )
+                        ),
+                        []:
+                        (
+                            airplanes[id]!setAction("none")
+                        )
+                    ),
+                    []:
+                        pass
+                )
+            )
+        ),
+        []:
+            pass
+    );
+
+    //check if an edge with the specified waypoints already exist
+    function containsEdge(waypointId1: string, waypointId2: string): bool
+        pre
+            waypointId1 in waypoints.dom,
+            waypointId2 in waypoints.dom
+    ^=
+    (
+        [waypointId1 in waypoints.dom & waypointId2 in waypoints.dom]:
+        (
+            [waypoints[waypointId1].neighbours.findFirst(waypointId2) = -1 & 
+                waypoints[waypointId1].neighbours.findFirst(waypointId1) = -1]:
+                false,
+            []:
+                true
+        ),
+        []:
+            false
+    );
+
+    //check if airplane inputId, has a horizonal distance of 10km and vertical distance of 300m with any other airplane
+    function isConflicted(inputId: string): bool
+        pre
+            inputId in airplanes.dom
+    ^=
+    (
+        exists id::airplanes.dom :- 
+        (
+            inputId ~= id & Calculations{}.getAbsoluteValue(airplanes[id].z - airplanes[inputId].z) < 300.0 & 
+            Calculations{}.findDistance(Vector{airplanes[id].x, airplanes[id].y},
+                Vector{airplanes[inputId].x, airplanes[inputId].y}) <= 10000.0
+        )
+    );
+
+    function isConflictedHorizontally(inputId: string): bool
+        pre
+            inputId in airplanes.dom
+    ^=
+    (
+        exists id::airplanes.dom :- 
+        (
+            inputId ~= id & Calculations{}.findDistance(Vector{airplanes[id].x, airplanes[id].y},
+                Vector{airplanes[inputId].x, airplanes[inputId].y}) <= 10000.0
+        )
+    );
+
+    //check if the airplane will collide with another
+    function willCollide(inputId: string): bool
+        pre
+            inputId in airplanes.dom
+    ^=
+    (
+        exists id::airplanes.dom :- 
+        (
+            inputId ~= id & (Calculations{}.getAbsoluteValue(airplanes[id].z - airplanes[inputId].z) <= 20.0 & 
+            Calculations{}.findDistance(Vector{airplanes[id].x, airplanes[id].y},
+                Vector{airplanes[inputId].x, airplanes[inputId].y}) <= 80.0)
+        )
+    );
+
+    //track all potential collisions that airplane inputId could be a part of
+    //and append them to the list of potential collisions. Sort the list afterwards as well
+    opaque schema !trackPotentialCollisions(inputId: string)
+         pre
+            inputId in airplanes.dom
+         post
+         (
+            [inputId in airplanes]:
+            (
+                [#airplanes[inputId].route ~= 0]:
+                (
+                    let newList ^= predictCollisions(inputId);
+                    potentialCollisions! = potentialCollisions ++ newList.opermndec then
+                    potentialCollisions! = potentialCollisions.opermndec then
+                    airplanes[inputId]!setExamined(true)
+                ),
+                []:
+                   pass
+            ),
+            []:
+               pass
+        );
+
+    //call computeTime with the position vector and direction vector of airplane inputId and the position vector
+    //and direction vector of every other airplane, to check if at any time in the future inputId will be conflicting
+    //with another airplane
+    function predictCollisions(inputId: string): set of PotentialCollision
+        pre
+            inputId in airplanes.dom,
+            #airplanes[inputId].route > 0
+        ^=
+        (
+            for those id::airplanes.dom.remove(inputId) :-
+            (
+                [airplanes[id].examined = false & id ~= inputId]:
+                (
+                    [forall collisions::potentialCollisions :- collisions.contains(id, inputId) = false]:
+                    (
+                        let pC ^= Calculations{}.computeTime(Vector{airplanes[id].x, airplanes[id].y}, 
+                            airplanes[id].currentVelocity,Vector{airplanes[inputId].x, airplanes[inputId].y}, 
+                            airplanes[inputId].currentVelocity, 5000.0,
+                            airplanes[id].timeToWaypoint, airplanes[inputId].timeToWaypoint);
+                        (
+                            [#airplanes[id].route > 0 & airplanes[id].examined = false]:
+                            (
+                                [pC.x >= 0.0]: 
+                                (
+                                    [airplanes[id].timeToWaypoint >= pC.x & airplanes[inputId].timeToWaypoint >= pC.x]:
+                                        true,
+                                    []:
+                                        false
+                                ),
+                                []:
+                                    false
+                            ),
+                            []:
+                                false
+                        )
+                    ),
+                    []:
+                        false
+                ),
+                []:
+                    false
+             )
+             yield 
+             (
+                let pC ^= Calculations{}.computeTime(Vector{airplanes[id].x, 
+                    airplanes[id].y}, airplanes[id].currentVelocity, Vector{airplanes[inputId].x, airplanes[inputId].y}, 
+                    airplanes[inputId].currentVelocity, 5000.0,
+                    airplanes[id].timeToWaypoint, airplanes[inputId].timeToWaypoint);
+                (
+                    PotentialCollision{seq of string{inputId, id}, pC.x + time, pC.y}
+                )
+            )
+        );
+
+    //recurse over all potential collisions. Ignore the ones for which either airplanes are
+    //changing their altitude i.e. both airplanes must have a PreventiveMeasureType of noChange@PreventiveMeasure
+    schema !recurseOverPotentialCollisions(index: int, potentialCollisionListSize: int)
+        pre
+            potentialCollisionListSize ~= 0,
+            index < potentialCollisionListSize,
+            index >= 0
+        decrease (potentialCollisionListSize - 1) - index
+        post
+        (
+            [index < potentialCollisionListSize & index < #potentialCollisions]:
+            (
+                (
+                    [#potentialCollisions[index].airplanes = 2]:
+                    (
+                        let id1 ^= potentialCollisions[index].airplanes[0];
+                        let id2 ^= potentialCollisions[index].airplanes[1];
+                        (
+                            [id1 in airplanes.dom & id2 in airplanes.dom]:
+                            (
+                                [airplanes[id1].preventiveMeasure.type = noChange@PreventiveMeasureType &
+                                airplanes[id2].preventiveMeasure.type = noChange@PreventiveMeasureType]:
+                                (
+                                    (
+                                        [airplanes[id1].z >= airplanes[id2].z]:
+                                        (
+                                            [potentialCollisions[index].time >= 0.0]:
+                                                !assignPreventiveMeasures(id1, id2, potentialCollisions[index].time),
+                                            []:
+                                                pass
+                                        ),
+                                        []:
+                                        (
+                                            [potentialCollisions[index].time >= 0.0]:
+                                                !assignPreventiveMeasures(id2, id1, potentialCollisions[index].time),
+                                            []:
+                                                pass
+                                        )
+                                    )
+                                ),
+                                []:
+                                    pass
+                            ),
+                            []:
+                                pass
+                        )
+                    ),
+                    []:
+                        pass
+                ) then
+                (
+                    [(index + 1) < potentialCollisionListSize & (index + 1) < #potentialCollisions]:
+                        !recurseOverPotentialCollisions(index + 1, potentialCollisionListSize),
+                    []:
+                        pass
+                )
+            ),
+            []:
+                pass
+        );
+
+
+    //Assign preventive measures such that the airplanes conform to their respective ceilings and floors.
+    //Moreover take into account situations where changing the altitude of just 1 airplane is sufficient
+    schema !assignPreventiveMeasures(id1: string, id2: string, collisionTime: real)
+        pre
+            id1 in airplanes.dom,
+            id2 in airplanes.dom,
+            collisionTime >= 0.0
+        post
+        (
+            let verticalDistance ^= Calculations{}.getAbsoluteValue(airplanes[id1].z - airplanes[id2].z);
+            (
+                [verticalDistance >= 300.0]:
+                (
+                    [airplanes[id1].verticalSpeed >= 0.0 & airplanes[id2].verticalSpeed >= 0.0]:
+                    (
+                        let duration ^= (verticalDistance - 300.0) / (airplanes[id1].verticalSpeed + airplanes[id2].verticalSpeed);
+                        (
+                            [duration >= 0.0]:
+                            (
+                                let floor ^= airplanes[id1].z - airplanes[id1].verticalSpeed * duration;
+                                let ceiling ^= airplanes[id2].z + airplanes[id2].verticalSpeed * duration;
+                                (
+                                    [airplanes[id1].preventiveMeasure.floor <= floor]:
+                                    (
+                                        airplanes[id1]!setPreventiveMeasure(floor, airplanes[id1].preventiveMeasure.ceiling, 
+                                            floor, noChange@PreventiveMeasureType, collisionTime)
+                                    ),
+                                    []:
+                                        pass
+                                ) then
+                                (
+                                    [airplanes[id2].preventiveMeasure.ceiling >= ceiling]:
+                                    (
+                                        airplanes[id2]!setPreventiveMeasure(airplanes[id2].preventiveMeasure.floor, 
+                                            ceiling, ceiling, noChange@PreventiveMeasureType, collisionTime)
+                                    ),
+                                    []:
+                                        pass
+                                )
+                            ),
+                            []:
+                                pass
+                        )
+                    ),
+                    []:
+                        pass
+                ),
+                [verticalDistance < 300.0 & verticalDistance >= 0.0]:
+                (
+                    var moreSpaceAbove: bool! = false;
+                    (
+                        [(Calculations{}.getAbsoluteValue(airplanes[id1].preventiveMeasure.ceiling - airplanes[id1].preventiveMeasure.floor)) <
+                            (Calculations{}.getAbsoluteValue(airplanes[id2].preventiveMeasure.ceiling - airplanes[id2].preventiveMeasure.floor))]:
+                        (
+                            [Calculations{}.getAbsoluteValue(airplanes[id1].preventiveMeasure.ceiling - airplanes[id1].z) >=
+                                Calculations{}.getAbsoluteValue(airplanes[id1].preventiveMeasure.floor - airplanes[id1].z)]:
+                            (
+                                moreSpaceAbove! = true
+                            ),
+                            []:
+                                moreSpaceAbove! = false
+                        ),
+                        []:
+                        (
+                            [Calculations{}.getAbsoluteValue(airplanes[id2].preventiveMeasure.ceiling - airplanes[id2].z) >=
+                                Calculations{}.getAbsoluteValue(airplanes[id2].preventiveMeasure.floor - airplanes[id2].z)]:
+                            (
+                                moreSpaceAbove! = true
+                            ),
+                            []:
+                                moreSpaceAbove! = false
+                         )
+                    ) 
+                    then
+                    (
+                         [moreSpaceAbove = true]:
+                         (
+                            [airplanes[id1].verticalSpeed >= 0.0]:
+                            (
+                                var duration: real! = (300.0 - verticalDistance) / airplanes[id1].verticalSpeed;
+                                (
+                                    [duration >= 0.0]:
+                                    (
+                                        [(duration + time) <= collisionTime & (airplanes[id1].z + (300.0 - verticalDistance)) <= 
+                                            airplanes[id1].preventiveMeasure.ceiling]:
+                                        (
+                                            (
+                                                airplanes[id2]!setPreventiveMeasure(airplanes[id2].preventiveMeasure.floor, 
+                                                    airplanes[id2].z, airplanes[id2].z, noChange@PreventiveMeasureType, collisionTime) 
+                                            ) then
+                                            (
+                                                [(airplanes[id1].z + (300.0 - verticalDistance)) <= airplanes[id1].preventiveMeasure.ceiling]:
+                                                (
+                                                    airplanes[id1]!setPreventiveMeasure(airplanes[id1].z + (300.0 - verticalDistance), airplanes[id1].preventiveMeasure.ceiling, 
+                                                        (300.0 - verticalDistance) + airplanes[id1].z, elevate@PreventiveMeasureType, collisionTime) 
+
+                                                ),
+                                                []:
+                                                (
+                                                    airplanes[id1]!setPreventiveMeasure(airplanes[id1].preventiveMeasure.ceiling, airplanes[id1].preventiveMeasure.ceiling, 
+                                                        (300.0 - verticalDistance) + airplanes[id1].z, elevate@PreventiveMeasureType, collisionTime)
+                                                )
+                                            )
+                                        ),
+                                        []:
+                                        (
+                                            duration! = (300.0 + verticalDistance) / airplanes[id2].verticalSpeed then
+                                            (
+                                                [duration >= 0.0]:
+                                                (
+                                                    [(duration + time) <= collisionTime & (airplanes[id2].z + (300.0 + verticalDistance)) <= 
+                                                        airplanes[id2].preventiveMeasure.ceiling]:
+                                                    (
+                                                        (
+                                                            airplanes[id1]!setPreventiveMeasure(airplanes[id1].preventiveMeasure.floor, 
+                                                                airplanes[id1].z, airplanes[id1].z, noChange@PreventiveMeasureType, collisionTime) 
+                                                        ) then
+                                                        (
+                                                            [(airplanes[id2].z + (300.0 + verticalDistance)) <= airplanes[id2].preventiveMeasure.ceiling]:
+                                                            (
+                                                                airplanes[id2]!setPreventiveMeasure(airplanes[id2].z + (300.0 + verticalDistance), airplanes[id2].preventiveMeasure.ceiling, 
+                                                                    (300.0 + verticalDistance) + airplanes[id2].z, elevate@PreventiveMeasureType, collisionTime) 
+
+                                                            ),
+                                                            []:
+                                                            (
+                                                                airplanes[id2]!setPreventiveMeasure(airplanes[id2].preventiveMeasure.ceiling, airplanes[id2].preventiveMeasure.ceiling, 
+                                                                    (300.0 + verticalDistance) + airplanes[id2].z, elevate@PreventiveMeasureType, collisionTime)
+                                                            )
+                                                        )
+                                                    ),
+                                                    []:
+                                                    (
+                                                        duration! = (300.0 - verticalDistance) / (airplanes[id1].verticalSpeed + airplanes[id2].verticalSpeed) then
+                                                        (
+                                                            [duration >= 0.0]:
+                                                            (
+                                                                (
+                                                                    [(airplanes[id1].z + airplanes[id1].verticalSpeed * duration) <= airplanes[id1].preventiveMeasure.ceiling]:
+                                                                    (
+                                                                        airplanes[id1]!setPreventiveMeasure(airplanes[id1].z + airplanes[id1].verticalSpeed * duration, 
+                                                                            airplanes[id1].preventiveMeasure.ceiling, airplanes[id1].z + airplanes[id1].verticalSpeed * duration,
+                                                                            elevate@PreventiveMeasureType, collisionTime)
+                                                                    ),
+                                                                    []:
+                                                                    (
+                                                                        airplanes[id1]!setPreventiveMeasure(airplanes[id1].preventiveMeasure.ceiling, 
+                                                                            airplanes[id1].preventiveMeasure.ceiling, airplanes[id1].z + airplanes[id1].verticalSpeed * duration,
+                                                                            elevate@PreventiveMeasureType, collisionTime)
+                                                                    )
+                                                                ) then
+                                                                (
+                                                                    [(airplanes[id2].z - airplanes[id2].verticalSpeed * duration) >= airplanes[id2].preventiveMeasure.floor]:
+                                                                    (
+                                                                        airplanes[id2]!setPreventiveMeasure(airplanes[id2].preventiveMeasure.floor, 
+                                                                            airplanes[id2].z - airplanes[id2].verticalSpeed * duration, 
+                                                                            airplanes[id2].z - airplanes[id2].verticalSpeed * duration, descend@PreventiveMeasureType, collisionTime)
+                                                                    ),
+                                                                    []:
+                                                                    (
+                                                                        airplanes[id2]!setPreventiveMeasure(airplanes[id2].preventiveMeasure.floor, 
+                                                                            airplanes[id2].preventiveMeasure.floor, airplanes[id2].z - airplanes[id2].verticalSpeed * duration,
+                                                                            descend@PreventiveMeasureType, collisionTime)                                           
+                                                                    )
+                                                                )
+                                                            ),
+                                                            []:
+                                                                pass
+                                                        )
+                                                    )
+                                                ),
+                                                []:
+                                                    pass
+                                            )
+                                        )
+                                    ),
+                                    []:
+                                        pass
+                                )
+                            ),
+                            []:
+                                pass
+                        ),
+                        [moreSpaceAbove = false]:
+                        (
+                            [airplanes[id2].verticalSpeed >= 0.0]:
+                            (
+                                var duration: real! = (300.0 - verticalDistance) / airplanes[id2].verticalSpeed;
+                                (
+                                    [duration >= 0.0]:
+                                    (
+                                        [(duration + time) <= collisionTime & (airplanes[id2].z - (300.0 - verticalDistance)) >=
+                                            airplanes[id2].preventiveMeasure.floor]:
+                                        (
+                                            (
+                                                airplanes[id1]!setPreventiveMeasure(airplanes[id1].z, 
+                                                    airplanes[id1].preventiveMeasure.ceiling, airplanes[id1].z, 
+                                                    noChange@PreventiveMeasureType, collisionTime)
+                                            ) then
+                                            (
+                                                [airplanes[id2].preventiveMeasure.floor <= (airplanes[id2].z - (300.0 - verticalDistance))]:
+                                                (
+                                                    airplanes[id2]!setPreventiveMeasure(airplanes[id2].preventiveMeasure.floor, 
+                                                        airplanes[id2].z - (300.0 - verticalDistance), airplanes[id2].z - (300.0 - verticalDistance),
+                                                        descend@PreventiveMeasureType, collisionTime)
+                                                ),
+                                                []:
+                                                (
+                                                    airplanes[id2]!setPreventiveMeasure(
+                                                        airplanes[id2].preventiveMeasure.floor, 
+                                                        airplanes[id2].preventiveMeasure.floor, 
+                                                        airplanes[id2].z - (300.0 - verticalDistance), 
+                                                        descend@PreventiveMeasureType, 
+                                                        collisionTime)
+                                                )
+                                            )
+                                        ),
+                                        []:
+                                        (
+                                            duration! = (300.0 + verticalDistance) / airplanes[id1].verticalSpeed then
+                                            (
+                                                [duration >= 0.0]:
+                                                (
+                                                    [(duration + time) <= collisionTime & (airplanes[id1].z - (300.0 + verticalDistance)) >=
+                                                        airplanes[id1].preventiveMeasure.floor]:
+                                                    (
+                                                        (
+                                                            airplanes[id2]!setPreventiveMeasure(airplanes[id2].z, 
+                                                                airplanes[id2].preventiveMeasure.ceiling, airplanes[id2].z, 
+                                                                noChange@PreventiveMeasureType, collisionTime)
+                                                        ) then
+                                                        (
+                                                            [airplanes[id1].preventiveMeasure.floor <= (airplanes[id1].z - (300.0 + verticalDistance))]:
+                                                            (
+                                                                airplanes[id1]!setPreventiveMeasure(airplanes[id1].preventiveMeasure.floor, 
+                                                                    airplanes[id1].z - (300.0 + verticalDistance), airplanes[id1].z - (300.0 + verticalDistance),
+                                                                    descend@PreventiveMeasureType, collisionTime)
+                                                            ),
+                                                            []:
+                                                            (
+                                                                airplanes[id1]!setPreventiveMeasure(
+                                                                    airplanes[id1].preventiveMeasure.floor, 
+                                                                    airplanes[id1].preventiveMeasure.floor, 
+                                                                    airplanes[id1].z - (300.0 + verticalDistance), 
+                                                                    descend@PreventiveMeasureType, 
+                                                                    collisionTime)
+                                                            )
+                                                        )
+                                                    ),
+                                                    []:
+                                                    (
+                                                        duration! = (300.0 - verticalDistance) / (airplanes[id1].verticalSpeed + airplanes[id2].verticalSpeed) then
+                                                        (
+                                                            [duration >= 0.0]:
+                                                            (
+                                                                (
+                                                                    [(airplanes[id1].z + airplanes[id1].verticalSpeed * duration) <= airplanes[id1].preventiveMeasure.ceiling]:
+                                                                    (
+                                                                        airplanes[id1]!setPreventiveMeasure(airplanes[id1].z + airplanes[id1].verticalSpeed * duration, 
+                                                                            airplanes[id1].preventiveMeasure.ceiling, airplanes[id1].z + airplanes[id1].verticalSpeed * duration,
+                                                                            elevate@PreventiveMeasureType, collisionTime)
+                                                                    ),
+                                                                    []:
+                                                                    (
+                                                                        airplanes[id1]!setPreventiveMeasure(airplanes[id1].preventiveMeasure.ceiling, 
+                                                                            airplanes[id1].preventiveMeasure.ceiling, airplanes[id1].z + airplanes[id1].verticalSpeed * duration,
+                                                                            elevate@PreventiveMeasureType, collisionTime)
+                                                                    )
+                                                                ) then
+                                                                (
+                                                                    [(airplanes[id2].z - airplanes[id2].verticalSpeed * duration) >= airplanes[id2].preventiveMeasure.floor]:
+                                                                    (
+                                                                        airplanes[id2]!setPreventiveMeasure(airplanes[id2].preventiveMeasure.floor, 
+                                                                            airplanes[id2].z - airplanes[id2].verticalSpeed * duration, 
+                                                                            airplanes[id2].z - airplanes[id2].verticalSpeed * duration, descend@PreventiveMeasureType, collisionTime)
+                                                                    ),
+                                                                    []:
+                                                                    (
+                                                                        airplanes[id2]!setPreventiveMeasure(airplanes[id2].preventiveMeasure.floor, 
+                                                                            airplanes[id2].preventiveMeasure.floor, airplanes[id2].z - airplanes[id2].verticalSpeed * duration,
+                                                                            descend@PreventiveMeasureType, collisionTime)                                           
+                                                                    )
+                                                                )
+                                                            ),
+                                                            []:
+                                                                pass
+                                                        )
+                                                    )
+                                                ),
+                                                []:
+                                                    pass
+                                            )
+                                        )
+                                    ),
+                                    []:
+                                        pass
+                                )
+                            ),
+                            []:
+                                pass
+                        )
+                    )
+                ),
+                []:
+                    pass
+            )
+        );
+
+    //Add and edge between 2 waypoints
+    schema !addPermissibleEdge(waypointId1: string, waypointId2: string)
+        pre
+            waypointId1 in waypoints.dom & waypointId2 in waypoints.dom
+        post
+        (
+            [waypointId1 in waypoints.dom & waypointId2 in waypoints.dom]:
+            (
+                (
+                    [waypoints[waypointId1].neighbours.findFirst(waypointId2) = -1 & 
+                        waypoints[waypointId1].neighbours.findFirst(waypointId1) = -1]:
+                    (
+                        waypoints[waypointId1]!addNeighbour(waypointId2) then
+                        waypoints[waypointId2]!addNeighbour(waypointId1)
+                    ),
+                    []:
+                        pass
+                )
+            ),
+            []:
+                pass
+        );
+
+    //Recurse through all neighbours of waypointIf, while updating the distance of all of the nodes
+    //which represent each of the waypoints in the priority queue
+    opaque schema !iterateThroughNeighbours(waypointId: string, index: int, dist: real)
+        pre
+            waypointId in waypoints.dom,
+            index >= 0,
+            index < #waypoints[waypointId].neighbours,
+            dist >= 0.0
+        decrease (#waypoints[waypointId].neighbours - 1) - index
+        post
+        (
+            let currentWaypoint ^= waypoints[waypointId];
+            (
+                [currentWaypoint.neighbours[index] in waypoints.dom]:
+                (
+                    let alt ^= dist + Edge{waypoints[currentWaypoint.neighbours[index]], currentWaypoint}.distance;
+                    (
+                        [currentWaypoint.neighbours[index] in distance]:
+                        (
+                            [alt >= 0.0 & alt < distance[currentWaypoint.neighbours[index]]]:
+                            (
+                                distance[currentWaypoint.neighbours[index]]! = alt then
+                                (
+                                    [currentWaypoint.neighbours[index] in newPath.dom]:
+                                        newPath[currentWaypoint.neighbours[index]]! = waypointId,
+                                    []:
+                                        newPath! = newPath.append(currentWaypoint.neighbours[index] -> waypointId)
+                                ) then
+                                (
+                                    [priorityQueue.size ~= 0]:
+                                        priorityQueue!updateNode(currentWaypoint.neighbours[index], alt),
+                                    []:
+                                        pass
+                                )
+                            ),
+                            []:
+                                pass
+                        ),
+                        []:
+                            pass
+                    )
+                ),
+                []:
+                    pass
+            ) then
+            (
+                [(index + 1) < #waypoints[waypointId].neighbours]:
+                    !iterateThroughNeighbours(waypointId, index + 1, dist),
+                []:
+                    pass
+            )
+        );
+    
+    //Recurse over priority queue until it is empty. At each step pop the min node.
+    opaque schema !iterateThroughPriorityQueue(size: int)
+        pre
+            priorityQueue.size > 0,
+            size <= priorityQueue.size,
+            size >= 0
+        decrease size
+        post
+        (
+            [priorityQueue.size ~= 0]:
+            (
+                let u ^= priorityQueue.getMin; 
+                (
+                    priorityQueue!removeMin then
+                    (
+                        (
+                            [u.waypoint in waypoints.dom & u.distance >= 0.0]:
+                            (
+                                [#waypoints[u.waypoint].neighbours ~= 0]:
+                                (
+                                    !iterateThroughNeighbours(u.waypoint, 0, u.distance)
+                                ),
+                                []:
+                                    pass
+                            ),
+                            []:
+                                pass
+                        )
+                    )
+                ) then
+                (
+                    [(size - 1) >= 0 & priorityQueue.size ~= 0 & (size - 1) <= priorityQueue.size]:
+                        !iterateThroughPriorityQueue(size - 1),
+                    []:
+                        pass
+                )
+            ),
+            []:
+                pass                                
+        );
+
+    //Create a Node object for each waypoints and insert it into the priority queue
+    schema !initializePriorityQueue(waypointList: seq of string, index: int)
+        pre
+            #waypointList ~= 0,
+            index >= 0,
+            index < #waypointList
+        decrease (#waypointList - 1) - index
+        post 
+        (
+            (
+                [waypointList[index] ~= "source" & waypointList[index] ~= "target"]:
+                (
+                    priorityQueue!insert(Node{waypointList[index], 1000000.0}) then
+                    (
+                        [waypointList[index] ~in distance]:
+                            distance! = distance.append(waypointList[index] -> 1000000.0),
+                        []:
+                            pass
+                    )
+                ),
+                []:
+                    pass
+            ) then
+            (
+                (
+                    [(index + 1) < #waypointList]:
+                        !initializePriorityQueue(waypointList, index + 1),
+                    []:
+                        pass
+                )
+            )
+        );
+    //dijkstras path finding algorithm
+    opaque schema !dijkstras
+        post
+        (
+            let sourceNode ^= Node{"source", 0.0};
+            let targetNode ^= Node{"target", 1000000.0};
+            let waypointList ^= waypoints.dom.opermndec;
+            (
+                priorityQueue!insert(sourceNode) then
+                priorityQueue!insert(targetNode) then
+                (
+                    ["source" ~in distance.dom & "target" ~in distance.dom]:
+                    (
+                        distance! = distance.append("source" -> 0.0) then
+                        distance! = distance.append("target" -> 1000000.0) 
+                    ),
+                    []:
+                        pass
+                ) then
+                (
+                    [#waypointList ~= 0]:
+                    (
+                        !initializePriorityQueue(waypointList, 0)
+                    ),
+                    []:
+                        pass
+                )
+            ) then
+            (
+                [priorityQueue.size ~= 0]:  
+                   !iterateThroughPriorityQueue(priorityQueue.size),
+                []:
+                    pass
+            )
+        );
+
+    //connect the current waypint to every other waypoint
+    schema !addNeighbours(currentWaypoint: string, waypointList: seq of string, index: int)
+        pre
+            index >= 0,
+            currentWaypoint in waypoints.dom,
+            index < #waypointList,
+            #waypointList ~= 0
+        decrease (#waypointList - 1) - index
+        post
+        (
+            (
+                [waypointList[index] ~= "source" & waypointList[index] ~= "target"]:
+                (
+                    [waypointList[index] in waypoints.dom & currentWaypoint ~= waypointList[index]]:
+                    (
+                        waypoints[currentWaypoint]!addNeighbour(waypointList[index]) then
+                        waypoints[waypointList[index]]!addNeighbour(currentWaypoint)
+                    ),
+                    []:
+                        pass
+                ),
+                []:
+                    pass
+            ) then
+            (
+                [(index + 1) < #waypointList]:
+                    !addNeighbours(currentWaypoint, waypointList, index + 1),
+                []:
+                    pass
+            )
+        );
+        
+    //for waypoints that are isolated, connect them to every other waypoint   
+    schema !connectIsolatedWaypoints(waypointList: seq of string, index: int)
+        pre
+            index >= 0,
+            #waypointList ~= 0,
+            index < #waypointList
+        decrease (#waypointList - 1) - index
+        post
+        (
+            (
+                [waypointList[index] in waypoints.dom]:
+                (
+                    [waypointList[index] ~= "source" & waypointList[index] ~= "target"]:
+                    (
+                        [#waypoints[waypointList[index]].neighbours = 0]:
+                        (
+                            !addNeighbours(waypointList[index], waypointList, 0)
+                        ),
+                        [#waypoints[waypointList[index]].neighbours = 1]:
+                        (
+                            [waypoints[waypointList[index]].neighbours[0] = "target"]:
+                            (
+                                !addNeighbours(waypointList[index], waypointList, 0)
+                            ),
+                            []:
+                                pass
+                        ),
+                        []:
+                            pass
+                    ),
+                    []:
+                        pass
+                ),
+                []:
+                    pass
+            ) then
+            (
+                [(index + 1) < #waypointList & #waypoints.dom ~= 0]:
+                    !connectIsolatedWaypoints(waypointList, index + 1),
+                []:
+                    pass
+            )
+        );
+        
+    function getHeading(airplaneId: string): string
+        pre
+            airplaneId in airplanes.dom
+    ^=
+    (
+        [#airplanes[airplaneId].route > 1]:
+        (
+            airplanes[airplaneId].route[0].ending.id
+        ),
+        [#airplanes[airplaneId].route = 1]:
+        (
+            "target"
+        ),
+        []:
+            "null"
+    );
+
+    //connect source to its closest waypoint and connect target to its 2 closest waypoints
+    schema !connectTerminalWaypoints(edges: seq of Edge, index: int, terminalWaypoint: string)
+        pre
+            index >= 0,
+            index < #edges,
+            terminalWaypoint in waypoints.dom,
+            #edges ~= 0
+        decrease (#edges - 1) - index
+        post
+        (
+            (
+                [terminalWaypoint = "source"]:
+                (
+                    [edges[index].ending.id in waypoints.dom]:
+                    (
+                        waypoints[terminalWaypoint]!addNeighbour(edges[index].ending.id)
+                    ),
+                    []:
+                        pass
+                ),
+                [terminalWaypoint = "target"]:
+                (
+                    [edges[index].starting.id in waypoints.dom]:
+                    (
+                        waypoints[edges[index].starting.id]!addNeighbour(terminalWaypoint)
+                    ),
+                    []:
+                        pass
+                ),
+                []:
+                    pass
+            ) then
+            (
+                [(index + 1) < #edges]:
+                (
+                    [terminalWaypoint = "target"]:
+                    (
+                        [(index + 1) < 3]:
+                            !connectTerminalWaypoints(edges, index + 1, terminalWaypoint),
+                        []:
+                            pass
+                    ),
+                    [terminalWaypoint = "source"]:
+                    (
+                        [(index + 1) < 2]:
+                            !connectTerminalWaypoints(edges, index + 1, terminalWaypoint),
+                        []:
+                            pass
+                    ),
+                    []:
+                        pass
+                ),
+                []:
+                    pass
+            )
+        );
+
+    //create 2 temporary waypoints: source and target. source represents the current location of the
+    //airplane whose path we would like to change, and target is the airplane's terminal point
+    opaque schema !findShortestPath(airplaneId: string)
+        pre
+            airplaneId in airplanes.dom,
+            ~("target" in waypoints.dom) | (waypoints["target"] = Waypoint{"target", 
+                airplanes[airplaneId].endingX, airplanes[airplaneId].endingY}),
+            ~("source" in waypoints.dom) | (waypoints["source"] = Waypoint{"source", 
+                airplanes[airplaneId].x, airplanes[airplaneId].y})
+        post
+        (
+            waypoints! = waypoints.append("source" -> Waypoint{"source", 
+                airplanes[airplaneId].x, airplanes[airplaneId].y}) then
+            waypoints! = waypoints.append("target" -> Waypoint{"target", 
+                airplanes[airplaneId].endingX, airplanes[airplaneId].endingY}) then
+            (
+                ["target" in waypoints.dom & "source" in waypoints.dom]:
+                (
+                    let possibleTerminalEdges ^= 
+                        (
+                            for those waypointId::waypoints.dom :-
+                            (
+                                waypointId ~= "target" & waypointId ~= "source" 
+                            )
+                            yield
+                            (
+                                Edge{waypoints[waypointId], waypoints["target"]}
+                            )
+                        ).opermndec;
+                    (   
+                        [#possibleTerminalEdges ~= 0]:  
+                            !connectTerminalWaypoints(possibleTerminalEdges, 0, "target"),
+                        []:
+                            pass
+                    ) then
+                    (
+                        let possibleStartingEdges ^= 
+                            (
+                                for those waypointId::waypoints.dom :-
+                                (
+                                    waypointId ~= getHeading(airplaneId) & waypointId ~= "source"
+                                )
+                                yield
+                                (
+                                    Edge{waypoints["source"], waypoints[waypointId]}
+                                )
+                            ).opermndec;
+                        (
+                            (   
+                                [#possibleStartingEdges ~= 0]:  
+                                    !connectTerminalWaypoints(possibleStartingEdges, 0, "source"),
+                                []:
+                                    pass
+                            )
+                        )
+                    ) then
+                    (
+                        let waypointList ^= waypoints.dom.opermndec;
+                        (
+                            [#waypointList ~= 0]:
+                            (
+                                !connectIsolatedWaypoints(waypointList, 0) then
+                                !dijkstras
+                            ),
+                            []:
+                                pass
+                        )
+                    )
+                ),
+                []:
+                    pass
+            )
+        );
+
+    //once a new path has been determined, empty the priority queue and remove waypoints
+    //source and target from the waypoints map
+    opaque schema !resetPriorityQueue
+        post
+        (
+            newPath! = map of (string -> string){} then
+            distance! = map of (string -> real){} then
+            waypoints! = waypoints.remove("source") then
+            waypoints! = waypoints.remove("target") then
+            (
+                forall waypointId::waypoints.dom :-
+                (
+                    let originalNeighbourList ^=
+                    (
+                        for those neighbour::waypoints[waypointId].neighbours :-
+                        (
+                            neighbour ~= "source" & neighbour ~= "target"
+                        )
+                        yield neighbour
+                    ).opermndec;
+                    waypoints[waypointId]!setNeighbours(originalNeighbourList)
+                )
+                
+            ) then
+            priorityQueue! = PriorityQueue{}
+        );
+
+    //remove potential collisions from the list of potential collisions if they
+    //have already occured
+    opaque schema !updatePotentialCollisionsList
+        post
+        (
+            potentialCollisions! = 
+            (
+                for those collision::potentialCollisions :-
+                (
+                    collision.time >= time
+                )
+                yield collision
+            ).opermndec
+        );
+
+    //recursively check potential collisions for each of the airplanes
+    opaque schema !trackPotentialCollisionsForAllAirplanes(airplaneList: seq of string, index: int)
+        pre
+            index >= 0,
+            #airplaneList ~= 0,
+            index < #airplaneList
+        decrease (#airplaneList - 1) - index
+        post
+        (
+            [(index) < #airplaneList]:
+            (
+                (
+                    [airplaneList[index] in airplanes.dom]:
+                        !trackPotentialCollisions(airplaneList[index]),
+                    []:
+                        pass
+                ) then
+                (
+                    [(index + 1) < #airplaneList & #airplaneList ~= 0]:
+                        !trackPotentialCollisionsForAllAirplanes(airplaneList, index + 1),
+                    []:
+                        pass
+                )
+            ),
+            []:
+                pass
+         );
+
+    //recusively update the location of each airplane
+    schema !updateLocationForAllAirplanes(airplaneList: seq of string, index: int)
+        pre
+            index >= 0,
+            #airplaneList ~= 0,
+            index < #airplaneList
+        decrease (#airplaneList - 1) - index
+        post
+        (
+            (
+                [index < #airplanes.dom]:
+                (
+                    [airplaneList[index] in airplanes.dom]:
+                        !updateLocation(airplaneList[index]),
+                    []:
+                        pass
+                ),
+                []:
+                    pass
+            ) then
+            (
+                [(index + 1) < #airplaneList & (index + 1) < #airplanes.dom]:
+                        !updateLocationForAllAirplanes(airplaneList, index + 1),
+                []:
+                    pass
+            )
+
+        );
+
+    schema !incrementCrashes(airplaneList: seq of string, airplanesAlreadyChecked!: set of string, index: int)
+        pre
+            index >= 0,
+            index < #airplaneList
+        decrease (#airplaneList - 1) - index
+        post
+        (
+            (
+                [airplaneList[index] in airplanes.dom]:
+                (
+                    let crashes ^=
+                    (
+                        for those id::airplanes.dom :- 
+                        (
+                            id ~in airplanesAlreadyChecked & airplaneList[index] ~= id & 
+                            (Calculations{}.getAbsoluteValue(airplanes[id].z - airplanes[airplaneList[index]].z) <= 20.0 & 
+                            Calculations{}.findDistance(Vector{airplanes[id].x, airplanes[id].y},
+                                Vector{airplanes[airplaneList[index]].x, airplanes[airplaneList[index]].y}) <= 80.0)
+                        )
+                        yield id
+                    );
+                    (
+                        noOfCrashes! = noOfCrashes + #crashes then
+                        airplanesAlreadyChecked! = airplanesAlreadyChecked.append(airplaneList[index])
+                    )
+                ),
+                []:
+                    pass
+            ) then
+            (
+                [(index + 1) < #airplaneList]:
+                (
+                    !incrementCrashes(airplaneList, airplanesAlreadyChecked!, index + 1)
+                ),
+                []:
+                    pass
+            )
+        );
+
+    //remove airplanes that were in the list "airplanesToRemove"
+    opaque schema !removeAirplanes(airplaneList: seq of string, index: int)
+        pre
+            index >= 0,
+            #airplaneList ~= 0,
+            index < #airplaneList,
+            time >= 0.0
+        decrease (#airplaneList - 1) - index
+        post
+        (
+            [(index) < #airplaneList]:
+            (
+                (
+                    [airplaneList[index] in airplanes.dom]:
+                    (
+                        (
+                            sumTimeConflicted! = sumTimeConflicted + airplanes[airplaneList[index]].timeConflicted then
+                            (
+                                [airplanes[airplaneList[index]].timeCloseToOtherPlanes > 0.0]:
+                                (
+                                    sumPercentageOfTimeConflicted1! = sumPercentageOfTimeConflicted1 + 
+                                        (airplanes[airplaneList[index]].timeConflicted / airplanes[airplaneList[index]].timeCloseToOtherPlanes)
+                                ),
+                                []:
+                                    pass
+                            ) then
+                            (
+                                [airplanes[airplaneList[index]].timeFlown > 0.0]:
+                                (
+                                    sumPercentageOfTimeConflicted2! = sumPercentageOfTimeConflicted2 + 
+                                        (airplanes[airplaneList[index]].timeConflicted / airplanes[airplaneList[index]].timeFlown)
+                                ),
+                                []:
+                                    pass
+                            ) then
+                            numAirplanesThatLeftRegion! = numAirplanesThatLeftRegion + 1
+                        ) then
+                        airplanes! = airplanes.remove(airplaneList[index]) then
+                        (
+                            potentialCollisions! =  
+                            (
+                                for those collision::potentialCollisions :-
+                                (
+                                    collision.involves(airplaneList[index]) = -1
+                                )
+                                yield collision
+                            ).opermndec
+                        )
+                    ),
+                    []:
+                        pass
+                ) then
+                (
+                    [#airplaneList ~= 0 & #airplanes.dom ~= 0 & (index + 1) < #airplaneList]:
+                        !removeAirplanes(airplaneList, index + 1),
+                    []:
+                        pass
+                )   
+            ),
+            []:
+                pass
+        );
+
+
+    //check if airplanes have insufficient time to avoid collisions in the next second and would thus collide
+    schema !checkIfAirplanesWillInevitablyCollide(potentialCollisionListSize: int, index: int)
+        pre
+            index >= 0,
+            potentialCollisionListSize ~= 0, 
+            #airplanes.dom ~= 0,
+            index < potentialCollisionListSize,
+            time >= 0.0
+        decrease (potentialCollisionListSize - 1) - index
+        post
+        (
+            [index < potentialCollisionListSize & index < #potentialCollisions]:
+            (  
+                (
+                    [potentialCollisions[index].minDist <= 80.0 & 
+                        potentialCollisions[index].minDist >= 0.0 & potentialCollisions[index].time <= (time + 1) & 
+                        #potentialCollisions[index].airplanes = 2]:
+                    (
+                        [potentialCollisions[index].airplanes[0] in airplanes.dom & potentialCollisions[index].airplanes[1] in airplanes.dom]:
+                        (
+                            var verticalSpeed1: real! =  airplanes[potentialCollisions[index].airplanes[0]].verticalSpeed;
+                            var preventiveMeasureType1: PreventiveMeasureType! = airplanes[potentialCollisions[index].airplanes[0]].preventiveMeasure.type;     
+                            var altitude1: real! = airplanes[potentialCollisions[index].airplanes[0]].z;
+                            var verticalSpeed2: real! =  airplanes[potentialCollisions[index].airplanes[1]].verticalSpeed;
+                            var preventiveMeasureType2: PreventiveMeasureType! = airplanes[potentialCollisions[index].airplanes[1]].preventiveMeasure.type;     
+                            var altitude2: real! = airplanes[potentialCollisions[index].airplanes[1]].z;
+                            [verticalSpeed1 > 0.0 & verticalSpeed2 > 0.0 & altitude1 > 0.0 & altitude2 > 0.0]:
+                            (
+                                (
+                                    [preventiveMeasureType1 = elevate@PreventiveMeasureType]:
+                                    (
+                                        [potentialCollisions[index].time >= 0.0]:
+                                            altitude1! = altitude1 + verticalSpeed1 * (time + 1 - potentialCollisions[index].time),
+                                        []:
+                                            pass
+                                    ),
+                                    [preventiveMeasureType1 = descend@PreventiveMeasureType]:
+                                    (
+                                        [potentialCollisions[index].time >= 0.0]:
+                                            altitude1! = altitude1 - verticalSpeed1 * (time + 1 - potentialCollisions[index].time),
+                                        []:
+                                            pass
+                                    ),
+                                    []:
+                                        pass
+                                ) then
+                                (
+                                    [preventiveMeasureType2 = elevate@PreventiveMeasureType]:
+                                    (
+                                        [potentialCollisions[index].time >= 0.0]:
+                                            altitude2! = altitude2 + verticalSpeed2 * (time + 1 - potentialCollisions[index].time),
+                                        []:
+                                            pass
+                                    ),
+                                    [preventiveMeasureType2 = descend@PreventiveMeasureType]:
+                                    (
+                                        [potentialCollisions[index].time >= 0.0]:
+                                            altitude2! = altitude2 - verticalSpeed2 * (time + 1 - potentialCollisions[index].time),
+                                        []:
+                                            pass
+                                    ),
+                                    []:
+                                        pass
+                                ) then
+                                (
+                                    [Calculations{}.getAbsoluteValue(altitude1 - altitude2) <= 20.0]:
+                                    (
+                                        airplanesToRemove! = airplanesToRemove.append(potentialCollisions[index].airplanes[0]) then
+                                        airplanesToRemove! = airplanesToRemove.append(potentialCollisions[index].airplanes[1]) then
+                                        noOfCrashes! = noOfCrashes + 1
+                                    ),
+                                    []:
+                                        pass
+                                )
+                            ),
+                            []:
+                                pass
+                        ),
+                        []:
+                            pass
+                    ),
+                    []:
+                        pass
+                ) then
+                (
+                    [#airplanes.dom ~= 0 & (index + 1) < #potentialCollisions & (index + 1) < potentialCollisionListSize]:
+                    (
+                        !checkIfAirplanesWillInevitablyCollide(potentialCollisionListSize, index + 1)
+                    ),
+                    []:
+                        pass
+                )
+            ),
+            []:
+                pass
+        );
+
+    //Step represents 1 time step wherein the location and potential collisions of each airplane are updated.
+    //The time is updated as well
+    opaque schema !step
+        pre
+            time >= 0.0
+        post
+        (
+            (
+                [#airplanes.dom ~= 0]:
+                (
+                    var airplaneList: seq of string! = airplanes.dom.opermndec;
+                    (
+                        (
+                            [#airplaneList > 1]:
+                            (
+                                !updatePotentialCollisionsList then
+                                !trackPotentialCollisionsForAllAirplanes(airplaneList, 0) then
+                                (
+                                    [#potentialCollisions > 0]:
+                                    (
+                                        !recurseOverPotentialCollisions(0, #potentialCollisions) then
+                                        (
+                                            [#airplanes.dom ~= 0 & #potentialCollisions ~= 0]:
+                                                !checkIfAirplanesWillInevitablyCollide(#potentialCollisions, 0),
+                                            []:
+                                                pass
+                                        )
+                                    ),
+                                    []:
+                                        pass
+                                ) 
+                            ),
+                            []:
+                                pass
+                        ) then
+                        (
+                            airplaneList! = airplanes.dom.opermndec then
+                            (
+                                [#airplaneList ~= 0]:
+                                    !updateLocationForAllAirplanes(airplaneList, 0),
+                                []:
+                                    pass
+                            )
+                        ) then
+                        (
+                            airplaneList! = airplanes.dom.opermndec then
+                            (
+                                [#airplaneList ~= 0]:
+                                (
+                                    var airplaneSet: set of string! = set of string{};
+                                    !incrementCrashes(airplaneList, airplaneSet!, 0)
+                                ),
+                                []:
+                                    pass
+                            )
+                        ) then
+                        (
+                            let collidedAirplanes ^= 
+                                for those id::airplanes.dom :- 
+                                (
+                                    willCollide(id) = true
+                                )
+                                yield id;
+                            airplanesToRemove! = airplanesToRemove ++ collidedAirplanes.opermndec then
+                            (
+                                [#airplanesToRemove ~= 0 & time >= 0.0]:
+                                (
+                                    !removeAirplanes(airplanesToRemove, 0)
+                                ),
+                                []:
+                                    pass
+                            )
+                        ) then
+                        airplanesToRemove! = seq of string{}
+                    )
+                ),
+                []:
+                    pass
+            ) then
+            (
+                [(time+1) >= 0.0]:
+                    time! = time + 1,
+                []:
+                    time! = 0.0
+            )
+        );
+
+    //constructor         
+    build{length: real, width: real}
+        pre
+            length >= 20000.0 & length <= 100000.0,
+            width >= 20000.0 & width <= 100000.0
+        post
+            airplanes! = map of (string -> Airplane){},
+            airplanesToRemove! = seq of string{},
+            waypoints! = map of (string -> Waypoint){},
+            potentialCollisions! = seq of PotentialCollision{},
+            time! = 0.0, 
+            regionSize! = pair of (real, real){width, length},
+            priorityQueue! = PriorityQueue{},
+            distance! = map of (string -> real){},
+            noOfCrashes! = 0,
+            sumPercentageOfTimeConflicted1! = 0.0,
+            sumPercentageOfTimeConflicted2! = 0.0,
+            sumTimeConflicted! = 0.0,
+            numAirplanesThatLeftRegion! = 0.0,
+            newPath! = map of (string -> string){};
+
+end;

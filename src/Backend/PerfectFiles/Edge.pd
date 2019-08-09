@@ -1,0 +1,69 @@
+//*******************************************************
+//The following class represents an edge in the tracked region. The edge is
+//usually between 2 waypoints. However, it can also be between terminal points
+//of an airplane and a waypoint.
+//*******************************************************
+
+import "Calculations.pd";
+import "Waypoint.pd";
+import "Vector.pd";
+
+class Edge ^=
+abstract
+    //starting and ending waypoint
+	var starting: Waypoint,
+	ending: Waypoint,
+	distance: real,
+    //direction represented as unit vector
+	direction: Vector;
+
+    //the terminal waypoints must have positive coodinated, at all times
+	invariant starting.x >= 0.0 & starting.y >= 0.0;
+	invariant ending.x >= 0.0 & ending.y >= 0.0;
+    //distance must also always be positive
+	invariant distance >= 0.0;
+
+interface
+    
+    //get functions
+	function starting;
+	function ending;
+	function distance;
+	function direction;
+
+    //comparator used for sorting Edge's in a seq, based on their distance
+	operator ~~(otherPath) ^=
+	(
+		[distance < otherPath.distance]:
+			below@rank,
+		[distance > otherPath.distance]:
+			above@rank,
+        [distance = otherPath.distance]:
+            same@rank,
+		[]:
+			same@rank
+	);
+
+    //constructor
+	build{!starting: Waypoint, !ending: Waypoint}
+		pre
+            //starting and ending coordinates must be valid
+			starting.x >= 0.0 & starting.y >= 0.0,
+			ending.x >= 0.0 & ending.y >= 0.0
+		post 
+		(
+            // compute direction and distance as post condition
+            (
+                [Calculations{}.findDistance(Vector{starting.x, starting.y}, 
+                    Vector{ending.x, ending.y}) >= 0.0]:
+    			    distance! = Calculations{}.findDistance(Vector{starting.x, starting.y}, 
+    				    Vector{ending.x, ending.y}),
+                []:
+                    distance! = 0.0
+            ) then
+			direction! = Calculations{}.findDirectionVector(Vector{starting.x, starting.y}, 
+				Vector{ending.x, ending.y})
+		);
+end;
+
+// End

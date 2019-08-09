@@ -1,0 +1,54 @@
+//*******************************************************
+//The following class represents a priority queue,constructed
+//from a heap
+//*******************************************************
+
+import "Edge.pd";
+
+class PriorityQueue ^= 
+
+abstract 
+	var queue: Heap; 
+
+interface 
+
+    function size: int
+    ^= queue.size;
+
+    schema !insert(node: Node) 
+    post 
+        queue!insert(node);
+
+    function getMin:Node
+    pre
+        queue.size ~= 0
+    ^= 
+        queue.getMin;
+
+    schema !removeMin
+        pre
+            queue.size ~= 0
+        post 
+            queue!removeMin;
+
+
+    //update node with id waypoint, then update position of node
+    //in the heap
+    opaque schema !updateNode(waypoint: string, distance: real)
+        pre
+            queue.size ~= 0,
+            distance >= 0.0
+        post
+        (
+            let index ^= queue.find(waypoint);
+            (
+                [index ~= -1 & index >= 0 & index < queue.size]:
+                    queue!update(index, distance),
+                []:
+                    pass
+            )
+        );
+
+    //constructor
+	build{} post queue!= Heap{};
+end;

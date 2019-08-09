@@ -1,0 +1,76 @@
+//*******************************************************
+//The following class represents a potential collision
+//*******************************************************
+
+class PotentialCollision ^=
+abstract
+    //seq of airplanes involved in the collision(max 2)
+    var airplanes: seq of string;
+    //time of potential collision
+	var time: real;
+    //the distance at time
+	var minDist: real;
+
+    //the number of airplanes must always be 2
+	invariant #airplanes = 2;
+    //the time must be greater than 0
+    invariant time >= 0.0;
+
+interface
+    //getters
+	function time;
+	function airplanes;
+	function minDist;
+
+    //checks whether this collisions is involving id and inputId
+	function contains(id:string, inputId:string): bool
+	^=
+	(
+	    [(id = airplanes[0] & inputId = airplanes[1]) | (id = airplanes[1] & inputId = airplanes[0])]:
+	        true,
+	    []:
+	        false
+	);
+
+    //checks whether id will take part in this collision
+	function involves(id:string): int
+	^=
+	(
+	    [id = airplanes[0]]:
+	    	0,
+	    [id = airplanes[1]]:
+	    	1,
+	    []:
+	        -1
+	);
+
+    //comparator for sorting
+	operator ~~(otherPotentialCollision) ^=
+	(
+		[time < otherPotentialCollision.time]:
+			below@rank,
+		[time > otherPotentialCollision.time]:
+			above@rank,
+        //if time is the same, check distance
+		[time = otherPotentialCollision.time]:
+        (
+            [minDist = otherPotentialCollision.minDist]:
+			    same@rank,
+            [minDist < otherPotentialCollision.minDist]:
+                below@rank,
+            []:
+                above@rank
+        ),
+		[]:
+			same@rank
+	);
+
+    //constructor
+	build{!airplanes: seq of string, !time: real, !minDist: real}
+		pre
+			time >= 0.0,
+			#airplanes = 2;
+
+end;
+
+// End

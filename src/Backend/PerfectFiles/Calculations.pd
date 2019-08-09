@@ -1,0 +1,185 @@
+//*******************************************************
+//The following class contains various functions for doing 
+//various calculations involving vectors and quadratic equations
+//*******************************************************
+
+import "Vector.pd";
+
+class Calculations ^=
+abstract
+interface
+
+    //given 2 points, find the direction vector
+    function findDirectionVector(source: Vector, destination: Vector): Vector ^= 
+    (
+        let vector ^= Vector{destination.x - source.x, destination.y - source.y};
+        findUnitVector(vector)
+    );
+
+    //returns a vector, given 2 points
+    function findVector(startPoint: Vector, endPoint: Vector): Vector ^=
+    (
+        Vector{endPoint.x - startPoint.x, endPoint.y - startPoint.y}
+    );
+
+    //returns the unit vector of a vector
+    function findUnitVector(vector: Vector): Vector ^= 
+    (
+        [~(vector.x = 0.0 & vector.y = 0.0)]:
+        (
+                let magnitude ^= (vector.x^2 + vector.y^2)^(0.5);
+                Vector{vector.x / magnitude, vector.y / magnitude}
+        ),
+        []: 
+            vector
+    );
+
+    //returns the length of a vector
+    function findDistance(vector1: Vector, vector2: Vector) : real ^= 
+    (   
+        let x ^= (vector2.x - vector1.x)^2 + (vector2.y - vector1.y)^2;
+        (
+            [x >= 0.0]:
+                getAbsoluteValue(x^0.5),
+            []:
+                0.0
+        )
+    );
+
+    //returns the absolute value of a number
+    function getAbsoluteValue(num: real): real ^= 
+    (
+            [num >= 0.0]:
+                num,
+            []:
+                -1.0 * num
+    );
+
+    //Given the poisition vector and direction vector  of 2 entities, determine whether at some point in the future, the distance
+    //between the 2 entities will be less than 10km
+    function computeTime(positionVector1: Vector, directionVector1: Vector, 
+        positionVector2: Vector, directionVector2: Vector, radius: real, timeToWaypoint1: real, timeToWaypoint2: real):
+        pair of (real, real)
+    ^=
+    (
+        let x1 ^= positionVector1.x;
+        let u1 ^= directionVector1.x;
+        let y1 ^= positionVector1.y;
+        let v1 ^= directionVector1.y;
+
+        let x2 ^= positionVector2.x;
+        let u2 ^= directionVector2.x;
+        let y2 ^= positionVector2.y;
+        let v2 ^= directionVector2.y;
+
+        //compute constants a,b and c for quadratic equation
+        let a ^= u1^2.0 - 2.0 * u1 * u2 + u2^2.0 + v1^2.0 - 2.0 * v1 * v2 + v2^2.0;
+        let b ^= 2.0 * x1 * u1 - 2.0 * x1 * u2 - 2.0 * u1 * x2 + 2.0 * x2 * u2 + 
+        2.0 * y1 * v1 - 2.0 * y1 * v2 - 2.0 * y2 * v1 + 2.0 * y2 * v2;
+        let c ^= x1^2.0 - 2.0 * x1 * x2 + x2^2.0 + y1^2.0 - 2.0 * y1 * y2 + y2^2.0 - (4*radius^2);
+        let currentDist ^= findDistance(Vector{x1, y1}, Vector{x2, y2});
+        (
+            [currentDist >= 2 * radius]:
+            (
+                //check if airplanes are parallel to eachother
+                [a ~= 0.0]:
+                (
+                    let d ^= (b / a);
+                    let timeClosest ^= -1 * d / 2;
+                    (
+                        [timeClosest >= 0.0]:
+                        (
+                            //-b/(2a) is equivalent to the time at which the 2 entities are closest
+                            let minDist ^=  findDistance(Vector{x1 + u1 * timeClosest, y1 + v1 * timeClosest},
+                                Vector{x2 + u2 * timeClosest, y2 + v2 * timeClosest});
+                            (
+                                [minDist <= 2 * radius]:
+                                (
+                                    [timeClosest <= timeToWaypoint1 & timeClosest <= timeToWaypoint2]:
+                                    (
+                                        pair of (real, real){timeClosest, minDist}
+                                    ),
+                                    []:
+                                    (
+                                        [(b^2 - 4 * a * c) >= 0.0]:
+                                        (
+                                            let solution1 ^= timeClosest + (b^2 - 4*a*c)^(0.5) / (2 * a);
+                                            let solution2 ^= timeClosest - (b^2 - 4*a*c)^(0.5) / (2 * a);
+                                            (
+                                                [solution1 >= 0.0 & solution2 >= 0.0]:
+                                                (
+                                                    pair of (real, real){min(solution1, solution2), minDist}                                        
+                                                ),
+                                                [solution1 >= 0.0 & solution2 < 0.0]:
+                                                (
+                                                    pair of (real, real){min(solution1, timeClosest), minDist}  
+                                                ),
+                                                [solution1 < 0.0 & solution2 >= 0.0]:
+                                                (
+                                                    pair of (real, real){min(solution2, timeClosest), minDist} 
+                                                ),
+                                                []:
+                                                    pair of (real, real){-1.0, 0.0}
+                                            )
+                                        ),
+                                        []:
+                                            pair of (real, real) {timeClosest, minDist}
+                                    )
+                                ),
+                                []:
+                                    pair of (real, real){-2.0, 0.0}
+                            )
+                        ),
+                        []:
+                        (                   
+                            [(b^2 - 4 * a * c) >= 0.0]:
+                            (
+                                let solution1 ^= timeClosest + (b^2 - 4*a*c)^(0.5) / (2 * a);
+                                let solution2 ^= timeClosest - (b^2 - 4*a*c)^(0.5) / (2 * a);
+                                let minDist1 ^=  findDistance(Vector{x1 + u1 * solution1, y1 + v1 * solution1},
+                                    Vector{x2 + u2 * solution1, y2 + v2 * solution1});
+                                let minDist2 ^=  findDistance(Vector{x1 + u1 * solution2, y1 + v1 * solution2},
+                                    Vector{x2 + u2 * solution2, y2 + v2 * solution2});  
+                                (
+                                    [min(minDist1, minDist2) <= 2 * radius]:
+                                    (
+                                        [solution1 >= 0.0 & solution2 >= 0.0]:
+                                        (
+                                            pair of (real, real){min(solution1, solution2), min(minDist1, minDist2)}                                        
+                                        ),
+                                        [solution1 >= 0.0 & solution2 < 0.0]:
+                                        (
+                                            pair of (real, real){solution1, min(minDist1, minDist2)}  
+                                        ),
+                                        [solution1 < 0.0 & solution2 >= 0.0]:
+                                        (
+                                            pair of (real, real){solution2, min(minDist1, minDist2)} 
+                                        ),
+                                        []:
+                                            pair of (real, real){-3.0, 0.0}
+                                    ),
+                                    []:
+                                        pair of (real, real){-4.0, 0.0}
+                                )                      
+                            ),
+                            []:
+                                pair of (real, real){-5.0, 0.0}
+                        )
+                    )
+                ),
+                []:
+                (
+                    pair of (real, real){-6.0, 0.0}
+                )
+            ),
+            []:
+            (
+                pair of (real, real){0.0, currentDist}
+            )
+        )
+    );
+
+    build{};
+end;
+
+// End

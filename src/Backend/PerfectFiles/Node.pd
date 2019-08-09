@@ -1,0 +1,30 @@
+//*******************************************************
+//* File:    C:\Users\menon\Desktop\university\ThirdYear\COMP30040\ATC\src\Backend\PerfectFiles\Node.pd
+//* Author:  Anjaney Menon
+//* Created: 15:04:10 on Saturday February 9th 2019 UTC
+//*******************************************************
+
+class Node ^=
+abstract
+	var waypoint: string,
+		distance: real;
+
+interface
+	function waypoint;
+	function distance;
+
+	schema !updateDistance(newDistance: real)
+		pre
+			newDistance >= 0.0
+		post
+		(
+			[newDistance >= 0.0]:
+				distance! = newDistance,
+			[]:
+				distance! = 0.0
+		);
+
+	build{!waypoint: string, !distance: real}
+end;
+
+// End

@@ -1,0 +1,8 @@
+//*******************************************************
+//class representing an enum that can take 3 values: noChange, elevate, descend.
+//it is used to specify what preventive measure an airplane should take
+//*******************************************************
+
+class PreventiveMeasureType ^= enum noChange, elevate, descend
+end;
+// End

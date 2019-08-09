@@ -1,0 +1,8 @@
+//*******************************************************
+//enum representing the states that an airpane can be in
+//*******************************************************
+
+class Status ^= enum noStatus, green, orange, red
+end;
+
+// End

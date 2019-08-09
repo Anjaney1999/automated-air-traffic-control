@@ -1,0 +1,17 @@
+//*******************************************************
+//Class representing a 2d vector
+//*******************************************************
+
+class Vector ^=
+abstract
+	var x: real;
+	var y: real;
+
+interface	
+	function x;
+	function y;
+
+	build{!x: real, !y: real};
+end;
+
+// End
