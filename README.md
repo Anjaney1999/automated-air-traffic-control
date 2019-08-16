@@ -5,7 +5,7 @@ If you would like a detailed explanation of how the application works, please re
 
 ## Requirements
 Make sure to use Java 8 (unfortunately, external libraries that were used do not work with newer versions of Java).  
-To run the application, double-click on the jar file located in ATC/out/artifacts or execute the following command: 
+To run the application, double-click on the jar file located in the root folder (ATC.jar) or execute the following command: 
 ``` 
 java -jar ATC.jar
 ```
